@@ -1,23 +1,53 @@
 use std::env;
-use std::str::FromStr;
 
-fn strtol(s: &str) -> Result<(i64, &str), Box<dyn std::error::Error>> {
-    if !s
-        .chars()
-        .nth(0)
-        .ok_or("invalid number".to_string())?
-        .is_digit(10)
-    {
-        return Err("invalid number".to_string()).map_err(|e| e.into());
-    }
+use anyhow::Result;
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::character::complete::{digit1, multispace0};
+use nom::combinator::map_res;
+use nom::multi::many1;
+use nom::sequence::delimited;
+use nom::{Finish, IResult};
 
-    match s.find(|c: char| !c.is_digit(10)) {
-        Some(i) => {Ok((i64::from_str(&s[..i])?, &s[i..]))},
-        None => Ok((i64::from_str(s)?, "")),
-    }
+#[derive(Clone, Debug, PartialEq)]
+enum Token {
+    Eof,
+    Integer(i64),
+    Plus,
+    Minus,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn integer(input: &str) -> IResult<&str, Token> {
+    let (input, value) = map_res(digit1, |s: &str| s.parse::<i64>())(input)?;
+
+    Ok((input, Token::Integer(value)))
+}
+
+fn plus(input: &str) -> IResult<&str, Token> {
+    let (input, _) = tag("+")(input)?;
+
+    Ok((input, Token::Plus))
+}
+
+fn minus(input: &str) -> IResult<&str, Token> {
+    let (input, _) = tag("-")(input)?;
+
+    Ok((input, Token::Minus))
+}
+
+fn lex(input: &str) -> IResult<&str, Token> {
+    alt((integer, plus, minus))(input)
+}
+
+fn lex_tokens(input: &str) -> IResult<&str, Vec<Token>> {
+    let (input, mut tokens) = many1(delimited(multispace0, lex, multispace0))(input)?;
+    if input.is_empty() {
+        tokens.push(Token::Eof);
+    }
+    Ok((input, tokens))
+}
+
+fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 2 {
@@ -27,20 +57,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  .globl main");
     println!("main:");
 
-    let (mut n, mut s) = strtol(&args[1])?;
-    println!("  mov ${}, %rax", n);
-
-    while s.len() != 0 {
-        let op = match s.chars().next().unwrap() {
-            '+' => "add",
-            '-' => "sub",
-            other => panic!("unexpected character: {}", other)
-        };
-        (n, s) = strtol(&s[1..])?;
-        println!("  {} ${}, %rax", op, n)
+    let (_, tokens) = lex_tokens(&args[1]).finish().unwrap();
+    let mut iter = tokens.iter();
+    if let Some(Token::Integer(i)) = iter.next() {
+        println!("  mov ${}, %rax", i);
     }
-
-    println!("  ret");
+    while let Some(token) = iter.next() {
+        match token {
+            Token::Integer(i) => println!("  mov ${}, %rax", i),
+            Token::Plus => {
+                if let Some(Token::Integer(i)) = iter.next() {
+                    println!("  add ${}, %rax", i)
+                }
+            }
+            Token::Minus => {
+                if let Some(Token::Integer(i)) = iter.next() {
+                    println!("  sub ${}, %rax", i)
+                }
+            }
+            Token::Eof => println!("  ret"),
+        }
+    }
 
     Ok(())
 }
