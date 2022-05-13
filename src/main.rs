@@ -4,10 +4,10 @@ use anyhow::Result;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{digit1, multispace0};
-use nom::combinator::map_res;
 use nom::multi::many1;
 use nom::sequence::delimited;
 use nom::{Finish, IResult};
+use nom_locate::{position, LocatedSpan};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Token {
@@ -17,32 +17,64 @@ enum Token {
     Minus,
 }
 
-fn integer(input: &str) -> IResult<&str, Token> {
-    let (input, value) = map_res(digit1, |s: &str| s.parse::<i64>())(input)?;
+type Span<'a> = LocatedSpan<&'a str>;
 
-    Ok((input, Token::Integer(value)))
+struct SToken<'a> {
+    pub position: Span<'a>,
+    pub value: Token,
 }
 
-fn plus(input: &str) -> IResult<&str, Token> {
+fn integer(input: Span) -> IResult<Span, SToken> {
+    let (input, value) = digit1(input)?;
+    let (input, position) = position(input)?;
+
+    Ok((
+        input,
+        SToken {
+            position,
+            value: Token::Integer(value.fragment().parse::<i64>().unwrap()),
+        },
+    ))
+}
+
+fn plus(input: Span) -> IResult<Span, SToken> {
     let (input, _) = tag("+")(input)?;
+    let (input, position) = position(input)?;
 
-    Ok((input, Token::Plus))
+    Ok((
+        input,
+        SToken {
+            position,
+            value: Token::Plus,
+        },
+    ))
 }
 
-fn minus(input: &str) -> IResult<&str, Token> {
+fn minus(input: Span) -> IResult<Span, SToken> {
     let (input, _) = tag("-")(input)?;
+    let (input, position) = position(input)?;
 
-    Ok((input, Token::Minus))
+    Ok((
+        input,
+        SToken {
+            position,
+            value: Token::Minus,
+        },
+    ))
 }
 
-fn lex(input: &str) -> IResult<&str, Token> {
+fn lex(input: Span) -> IResult<Span, SToken> {
     alt((integer, plus, minus))(input)
 }
 
-fn lex_tokens(input: &str) -> IResult<&str, Vec<Token>> {
+fn lex_tokens(input: Span) -> IResult<Span, Vec<SToken>> {
     let (input, mut tokens) = many1(delimited(multispace0, lex, multispace0))(input)?;
     if input.is_empty() {
-        tokens.push(Token::Eof);
+        let (_, position) = position(input)?;
+        tokens.push(SToken {
+            position,
+            value: Token::Eof,
+        });
     }
     Ok((input, tokens))
 }
@@ -57,24 +89,29 @@ fn main() -> Result<()> {
     println!("  .globl main");
     println!("main:");
 
-    let (_, tokens) = lex_tokens(&args[1]).finish().unwrap();
+    let input = Span::new(&args[1]);
+    let (_, tokens) = lex_tokens(input).finish().unwrap();
     let mut iter = tokens.iter();
-    if let Some(Token::Integer(i)) = iter.next() {
-        println!("  mov ${}, %rax", i);
-    }
-    while let Some(token) = iter.next() {
-        match token {
+    while let Some(SToken { position, value }) = iter.next() {
+        match value {
             Token::Integer(i) => println!("  mov ${}, %rax", i),
-            Token::Plus => {
-                if let Some(Token::Integer(i)) = iter.next() {
-                    println!("  add ${}, %rax", i)
+            Token::Plus | Token::Minus => match iter.next() {
+                Some(SToken {
+                    value: Token::Integer(i),
+                    ..
+                }) => {
+                    let op = if value == &Token::Plus { "add" } else { "sub" };
+                    println!("  {} ${}, %rax", op, i)
                 }
-            }
-            Token::Minus => {
-                if let Some(Token::Integer(i)) = iter.next() {
-                    println!("  sub ${}, %rax", i)
+                _ => {
+                    println!(
+                        "{}\n{}^ expected a number",
+                        &args[1],
+                        " ".repeat(position.get_utf8_column() - 1)
+                    );
+                    std::process::exit(1)
                 }
-            }
+            },
             Token::Eof => println!("  ret"),
         }
     }

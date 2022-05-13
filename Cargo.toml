@@ -7,4 +7,5 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-nom = "6"
+nom = "7"
+nom_locate = "4"
