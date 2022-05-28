@@ -10,7 +10,7 @@ use nom::character::complete::{digit1, multispace0};
 use nom::combinator::{eof, map, map_res, value};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::many0;
-use nom::sequence::{delimited, pair, terminated};
+use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::{
     Compare, CompareResult, Err, Finish, IResult, InputIter, InputLength, InputTake, Needed,
     Parser, Slice,
@@ -211,6 +211,7 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
 #[derive(Clone, Debug, PartialEq)]
 enum Node {
     Integer(i64),
+    Neg(Box<Node>),
     Add(Box<Node>, Box<Node>),
     Sub(Box<Node>, Box<Node>),
     Mul(Box<Node>, Box<Node>),
@@ -231,6 +232,16 @@ fn parse_integer(input: Tokens) -> IResult<Tokens, Node> {
 
 fn parse_primary(input: Tokens) -> IResult<Tokens, Node> {
     alt((parse_parens, parse_integer))(input)
+}
+
+fn parse_unary(input: Tokens) -> IResult<Tokens, Node> {
+    alt((
+        preceded(tag(Token::Plus), parse_unary),
+        map(preceded(tag(Token::Minus), parse_unary), |x| {
+            Node::Neg(Box::new(x))
+        }),
+        parse_primary,
+    ))(input)
 }
 
 fn fold_exprs(init: Node, remainder: Vec<(Token, Node)>) -> Node {
@@ -261,10 +272,7 @@ where
 }
 
 fn parse_mul(input: Tokens) -> IResult<Tokens, Node> {
-    parse_infix(
-        alt((tag(Token::Multiply), tag(Token::Divide))),
-        parse_primary,
-    )(input)
+    parse_infix(alt((tag(Token::Multiply), tag(Token::Divide))), parse_unary)(input)
 }
 
 fn parse_add(input: Tokens) -> IResult<Tokens, Node> {
@@ -291,6 +299,10 @@ fn gen_expr(expr: Node) {
     match expr {
         Node::Integer(i) => {
             println!("  mov ${}, %rax", i)
+        }
+        Node::Neg(lhs) => {
+            gen_expr(*lhs);
+            println!("  neg %rax");
         }
         Node::Add(lhs, rhs) => {
             gen_expr(*rhs);
