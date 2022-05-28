@@ -8,11 +8,11 @@ fn pop(r: &str) {
     println!("  pop {}", r);
 }
 
-fn expr(node: Node) {
+fn stmt(node: Node) {
     fn gen(rhs: Node, lhs: Node) {
-        expr(rhs);
+        stmt(rhs);
         push();
-        expr(lhs);
+        stmt(lhs);
         pop("%rdi");
     }
 
@@ -28,7 +28,7 @@ fn expr(node: Node) {
             println!("  mov ${}, %rax", i)
         }
         Node::Neg(lhs) => {
-            expr(*lhs);
+            stmt(*lhs);
             println!("  neg %rax");
         }
         Node::Add(lhs, rhs) => {
@@ -63,11 +63,11 @@ fn expr(node: Node) {
     }
 }
 
-pub fn generate(node: Node) {
+pub fn generate(stmts: Vec<Node>) {
     println!("  .globl main");
     println!("main:");
 
-    expr(node);
+    stmts.into_iter().for_each(stmt);
 
     println!("  ret");
 }

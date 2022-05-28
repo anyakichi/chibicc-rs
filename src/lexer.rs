@@ -28,6 +28,7 @@ pub enum Token {
     GreaterThanEqual,
     LessThan,
     LessThanEqual,
+    SemiColon,
 }
 
 impl<'a> InputLength for Token {
@@ -88,6 +89,7 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
         f("<", Token::LessThan),
         f(">=", Token::GreaterThanEqual),
         f(">", Token::GreaterThan),
+        f(";", Token::SemiColon),
     ))(input)
 }
 

@@ -220,6 +220,10 @@ fn expr(input: Tokens) -> IResult<Tokens, Node> {
     equality(input)
 }
 
-pub fn parse(input: Tokens) -> IResult<Tokens, Node> {
-    terminated(expr, tag(Token::Eof))(input)
+fn stmt(input: Tokens) -> IResult<Tokens, Node> {
+    terminated(expr, tag(Token::SemiColon))(input)
+}
+
+pub fn parse(input: Tokens) -> IResult<Tokens, Vec<Node>> {
+    terminated(many0(stmt), tag(Token::Eof))(input)
 }
