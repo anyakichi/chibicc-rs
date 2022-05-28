@@ -27,6 +27,12 @@ enum Token {
     Divide,
     LParen,
     RParen,
+    Equal,
+    NotEqual,
+    GreaterThan,
+    GreaterThanEqual,
+    LessThan,
+    LessThanEqual,
 }
 
 impl<'a> InputLength for Token {
@@ -81,6 +87,12 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
         f("/", Token::Divide),
         f("(", Token::LParen),
         f(")", Token::RParen),
+        f("==", Token::Equal),
+        f("!=", Token::NotEqual),
+        f("<=", Token::LessThanEqual),
+        f("<", Token::LessThan),
+        f(">=", Token::GreaterThanEqual),
+        f(">", Token::GreaterThan),
     ))(input)
 }
 
@@ -216,6 +228,10 @@ enum Node {
     Sub(Box<Node>, Box<Node>),
     Mul(Box<Node>, Box<Node>),
     Div(Box<Node>, Box<Node>),
+    Eq(Box<Node>, Box<Node>),
+    Ne(Box<Node>, Box<Node>),
+    Le(Box<Node>, Box<Node>),
+    Lt(Box<Node>, Box<Node>),
 }
 
 fn parse_parens(input: Tokens) -> IResult<Tokens, Node> {
@@ -252,6 +268,12 @@ fn fold_exprs(init: Node, remainder: Vec<(Token, Node)>) -> Node {
             Token::Minus => Node::Sub(Box::new(acc), Box::new(expr)),
             Token::Multiply => Node::Mul(Box::new(acc), Box::new(expr)),
             Token::Divide => Node::Div(Box::new(acc), Box::new(expr)),
+            Token::GreaterThanEqual => Node::Le(Box::new(expr), Box::new(acc)),
+            Token::GreaterThan => Node::Lt(Box::new(expr), Box::new(acc)),
+            Token::LessThanEqual => Node::Le(Box::new(acc), Box::new(expr)),
+            Token::LessThan => Node::Lt(Box::new(acc), Box::new(expr)),
+            Token::Equal => Node::Eq(Box::new(acc), Box::new(expr)),
+            Token::NotEqual => Node::Ne(Box::new(acc), Box::new(expr)),
             _ => panic!("unexpected token"),
         })
 }
@@ -279,8 +301,27 @@ fn parse_add(input: Tokens) -> IResult<Tokens, Node> {
     parse_infix(alt((tag(Token::Plus), tag(Token::Minus))), parse_mul)(input)
 }
 
+fn parse_relational(input: Tokens) -> IResult<Tokens, Node> {
+    parse_infix(
+        alt((
+            tag(Token::GreaterThan),
+            tag(Token::GreaterThanEqual),
+            tag(Token::LessThan),
+            tag(Token::LessThanEqual),
+        )),
+        parse_add,
+    )(input)
+}
+
+fn parse_equality(input: Tokens) -> IResult<Tokens, Node> {
+    parse_infix(
+        alt((tag(Token::Equal), tag(Token::NotEqual))),
+        parse_relational,
+    )(input)
+}
+
 fn parse_expr(input: Tokens) -> IResult<Tokens, Node> {
-    parse_add(input)
+    parse_equality(input)
 }
 
 fn parse_tokens(input: Tokens) -> IResult<Tokens, Node> {
@@ -296,6 +337,20 @@ fn pop(r: &str) {
 }
 
 fn gen_expr(expr: Node) {
+    fn gen(rhs: Node, lhs: Node) {
+        gen_expr(rhs);
+        push();
+        gen_expr(lhs);
+        pop("%rdi");
+    }
+
+    fn cmp(rhs: Node, lhs: Node, op: &str) {
+        gen(rhs, lhs);
+        println!("  cmp %rdi, %rax");
+        println!("  {} %al", op);
+        println!("  movzb %al, %rax");
+    }
+
     match expr {
         Node::Integer(i) => {
             println!("  mov ${}, %rax", i)
@@ -305,33 +360,33 @@ fn gen_expr(expr: Node) {
             println!("  neg %rax");
         }
         Node::Add(lhs, rhs) => {
-            gen_expr(*rhs);
-            push();
-            gen_expr(*lhs);
-            pop("%rdi");
+            gen(*rhs, *lhs);
             println!("  add %rdi, %rax");
         }
         Node::Sub(lhs, rhs) => {
-            gen_expr(*rhs);
-            push();
-            gen_expr(*lhs);
-            pop("%rdi");
+            gen(*rhs, *lhs);
             println!("  sub %rdi, %rax");
         }
         Node::Mul(lhs, rhs) => {
-            gen_expr(*rhs);
-            push();
-            gen_expr(*lhs);
-            pop("%rdi");
+            gen(*rhs, *lhs);
             println!("  imul %rdi, %rax");
         }
         Node::Div(lhs, rhs) => {
-            gen_expr(*rhs);
-            push();
-            gen_expr(*lhs);
-            pop("%rdi");
+            gen(*rhs, *lhs);
             println!("  cqo");
             println!("  idiv %rdi");
+        }
+        Node::Eq(lhs, rhs) => {
+            cmp(*rhs, *lhs, "sete");
+        }
+        Node::Ne(lhs, rhs) => {
+            cmp(*rhs, *lhs, "setne");
+        }
+        Node::Lt(lhs, rhs) => {
+            cmp(*rhs, *lhs, "setl");
+        }
+        Node::Le(lhs, rhs) => {
+            cmp(*rhs, *lhs, "setle");
         }
     }
 }
