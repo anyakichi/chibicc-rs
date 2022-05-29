@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
+use nom::character::complete::satisfy;
 use nom::character::complete::{digit1, multispace0};
 use nom::combinator::{eof, map, map_res, value};
 use nom::error::Error;
@@ -15,7 +16,9 @@ use nom_locate::{position, LocatedSpan};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Token {
     Eof,
+    Ident(char),
     Integer(i64),
+    Assign,
     Plus,
     Minus,
     Multiply,
@@ -66,6 +69,10 @@ where
     }
 }
 
+fn identifier(i: Span) -> IResult<Span, SToken> {
+    stoken(map(satisfy(|x: char| x.is_alphabetic()), Token::Ident))(i)
+}
+
 fn integer(input: Span) -> IResult<Span, SToken> {
     stoken(map(
         map_res(digit1, |x: Span| FromStr::from_str(x.fragment())),
@@ -84,6 +91,7 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
         f("(", Token::LParen),
         f(")", Token::RParen),
         f("==", Token::Equal),
+        f("=", Token::Assign),
         f("!=", Token::NotEqual),
         f("<=", Token::LessThanEqual),
         f("<", Token::LessThan),
@@ -94,7 +102,7 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
 }
 
 fn token(input: Span) -> IResult<Span, SToken> {
-    alt((integer, punctuator))(input)
+    alt((identifier, integer, punctuator))(input)
 }
 
 fn tokens(input: Span) -> IResult<Span, Vec<SToken>> {

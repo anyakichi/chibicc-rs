@@ -16,6 +16,11 @@ fn stmt(node: Node) {
         pop("%rdi");
     }
 
+    fn gen_addr(name: char) {
+        let offset = (name as i64 - 'a' as i64 + 1) * 8;
+        println!("  lea {}(%rbp), %rax", -offset);
+    }
+
     fn cmp(rhs: Node, lhs: Node, op: &str) {
         gen(rhs, lhs);
         println!("  cmp %rdi, %rax");
@@ -24,6 +29,21 @@ fn stmt(node: Node) {
     }
 
     match node {
+        Node::Assign(lhs, rhs) => {
+            if let Node::Var(name) = *lhs {
+                gen_addr(name);
+            } else {
+                panic!("unexpedted lhs of assign")
+            }
+            push();
+            stmt(*rhs);
+            pop("%rdi");
+            println!("  mov %rax, (%rdi)");
+        }
+        Node::Var(name) => {
+            gen_addr(name);
+            println!("  mov (%rax), %rax");
+        }
         Node::Integer(i) => {
             println!("  mov ${}, %rax", i)
         }
@@ -67,7 +87,13 @@ pub fn generate(stmts: Vec<Node>) {
     println!("  .globl main");
     println!("main:");
 
+    println!("  push %rbp");
+    println!("  mov %rsp, %rbp");
+    println!("  sub $208, %rsp");
+
     stmts.into_iter().for_each(stmt);
 
+    println!("  mov %rbp, %rsp");
+    println!("  pop %rbp");
     println!("  ret");
 }

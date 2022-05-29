@@ -4,7 +4,7 @@ use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
 use anyhow::Result;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
-use nom::combinator::map;
+use nom::combinator::{map, opt};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::many0;
 use nom::sequence::{delimited, pair, preceded, terminated};
@@ -124,6 +124,8 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
+    Assign(Box<Node>, Box<Node>),
+    Var(char),
     Integer(i64),
     Neg(Box<Node>),
     Add(Box<Node>, Box<Node>),
@@ -140,6 +142,14 @@ fn parens(input: Tokens) -> IResult<Tokens, Node> {
     delimited(tag(Token::LParen), expr, tag(Token::RParen))(input)
 }
 
+fn identifier(input: Tokens) -> IResult<Tokens, Node> {
+    let (i1, t) = take(1usize)(input)?;
+    match t[0].value {
+        Token::Ident(i) => Ok((i1, Node::Var(i))),
+        _ => Err(Err::Error(Error::new(input, ErrorKind::Tag))),
+    }
+}
+
 fn integer(input: Tokens) -> IResult<Tokens, Node> {
     let (i1, t) = take(1usize)(input)?;
     match t[0].value {
@@ -149,7 +159,7 @@ fn integer(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn primary(input: Tokens) -> IResult<Tokens, Node> {
-    alt((parens, integer))(input)
+    alt((parens, identifier, integer))(input)
 }
 
 fn unary(input: Tokens) -> IResult<Tokens, Node> {
@@ -162,46 +172,71 @@ fn unary(input: Tokens) -> IResult<Tokens, Node> {
     ))(input)
 }
 
-fn fold_exprs(init: Node, remainder: Vec<(Token, Node)>) -> Node {
-    remainder
-        .into_iter()
-        .fold(init, |acc, (token, expr)| match token {
-            Token::Plus => Node::Add(Box::new(acc), Box::new(expr)),
-            Token::Minus => Node::Sub(Box::new(acc), Box::new(expr)),
-            Token::Multiply => Node::Mul(Box::new(acc), Box::new(expr)),
-            Token::Divide => Node::Div(Box::new(acc), Box::new(expr)),
-            Token::GreaterThanEqual => Node::Le(Box::new(expr), Box::new(acc)),
-            Token::GreaterThan => Node::Lt(Box::new(expr), Box::new(acc)),
-            Token::LessThanEqual => Node::Le(Box::new(acc), Box::new(expr)),
-            Token::LessThan => Node::Lt(Box::new(acc), Box::new(expr)),
-            Token::Equal => Node::Eq(Box::new(acc), Box::new(expr)),
-            Token::NotEqual => Node::Ne(Box::new(acc), Box::new(expr)),
-            _ => panic!("unexpected token"),
-        })
+fn infix_expr(token: Token, lhs: Node, rhs: Node) -> Node {
+    match token {
+        Token::Plus => Node::Add(Box::new(lhs), Box::new(rhs)),
+        Token::Minus => Node::Sub(Box::new(lhs), Box::new(rhs)),
+        Token::Multiply => Node::Mul(Box::new(lhs), Box::new(rhs)),
+        Token::Divide => Node::Div(Box::new(lhs), Box::new(rhs)),
+        Token::GreaterThanEqual => Node::Le(Box::new(rhs), Box::new(lhs)),
+        Token::GreaterThan => Node::Lt(Box::new(rhs), Box::new(lhs)),
+        Token::LessThanEqual => Node::Le(Box::new(lhs), Box::new(rhs)),
+        Token::LessThan => Node::Lt(Box::new(lhs), Box::new(rhs)),
+        Token::Equal => Node::Eq(Box::new(lhs), Box::new(rhs)),
+        Token::NotEqual => Node::Ne(Box::new(lhs), Box::new(rhs)),
+        Token::Assign => Node::Assign(Box::new(lhs), Box::new(rhs)),
+        _ => panic!("unexpected token"),
+    }
 }
 
-fn infix<'a, E, F, G>(first: F, second: G) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Node, E>
+fn infixl<'a, E, F, G, H>(
+    left: F,
+    op: G,
+    right: H,
+) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Node, E>
 where
-    F: Parser<Tokens<'a>, Tokens<'a>, E>,
-    G: Parser<Tokens<'a>, Node, E> + Copy,
+    F: Parser<Tokens<'a>, Node, E>,
+    G: Parser<Tokens<'a>, Tokens<'a>, E>,
+    H: Parser<Tokens<'a>, Node, E>,
     E: ParseError<Tokens<'a>>,
 {
-    map(
-        pair(second, many0(pair(map(first, |x| *x[0]), second))),
-        |(i, r)| fold_exprs(i, r),
-    )
+    map(pair(left, many0(pair(op, right))), |(i, xs)| {
+        xs.into_iter().fold(i, |l, (o, r)| infix_expr(*o[0], l, r))
+    })
+}
+
+fn infixr<'a, E, F, G, H>(
+    left: F,
+    op: G,
+    right: H,
+) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Node, E>
+where
+    F: Parser<Tokens<'a>, Node, E>,
+    G: Parser<Tokens<'a>, Tokens<'a>, E>,
+    H: Parser<Tokens<'a>, Node, E>,
+    E: ParseError<Tokens<'a>>,
+{
+    map(pair(left, opt(pair(op, right))), |(l, opt)| match opt {
+        Some((o, r)) => infix_expr(*o[0], l, r),
+        None => l,
+    })
 }
 
 fn mul(input: Tokens) -> IResult<Tokens, Node> {
-    infix(alt((tag(Token::Multiply), tag(Token::Divide))), unary)(input)
+    infixl(
+        unary,
+        alt((tag(Token::Multiply), tag(Token::Divide))),
+        unary,
+    )(input)
 }
 
 fn add(input: Tokens) -> IResult<Tokens, Node> {
-    infix(alt((tag(Token::Plus), tag(Token::Minus))), mul)(input)
+    infixl(mul, alt((tag(Token::Plus), tag(Token::Minus))), mul)(input)
 }
 
 fn relational(input: Tokens) -> IResult<Tokens, Node> {
-    infix(
+    infixl(
+        add,
         alt((
             tag(Token::GreaterThan),
             tag(Token::GreaterThanEqual),
@@ -213,11 +248,19 @@ fn relational(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn equality(input: Tokens) -> IResult<Tokens, Node> {
-    infix(alt((tag(Token::Equal), tag(Token::NotEqual))), relational)(input)
+    infixl(
+        relational,
+        alt((tag(Token::Equal), tag(Token::NotEqual))),
+        relational,
+    )(input)
+}
+
+fn assign(input: Tokens) -> IResult<Tokens, Node> {
+    infixr(equality, tag(Token::Assign), assign)(input)
 }
 
 fn expr(input: Tokens) -> IResult<Tokens, Node> {
-    equality(input)
+    assign(input)
 }
 
 fn stmt(input: Tokens) -> IResult<Tokens, Node> {
