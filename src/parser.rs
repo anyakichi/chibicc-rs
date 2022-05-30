@@ -136,10 +136,15 @@ pub enum Node {
     Ne(Box<Node>, Box<Node>),
     Le(Box<Node>, Box<Node>),
     Lt(Box<Node>, Box<Node>),
+    Return(Box<Node>),
 }
 
 fn parens(input: Tokens) -> IResult<Tokens, Node> {
     delimited(tag(Token::LParen), expr, tag(Token::RParen))(input)
+}
+
+fn r#return(input: Tokens) -> IResult<Tokens, Node> {
+    preceded(tag(Token::Return), map(expr, |x| Node::Return(Box::new(x))))(input)
 }
 
 fn identifier(input: Tokens) -> IResult<Tokens, Node> {
@@ -253,7 +258,7 @@ fn expr(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn stmt(input: Tokens) -> IResult<Tokens, Node> {
-    terminated(expr, tag(Token::SemiColon))(input)
+    terminated(alt((r#return, expr)), tag(Token::SemiColon))(input)
 }
 
 pub fn parse(input: Tokens) -> IResult<Tokens, Vec<Node>> {

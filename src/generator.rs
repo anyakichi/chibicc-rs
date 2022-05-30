@@ -108,6 +108,10 @@ fn stmt(node: Node) {
         Node::Le(lhs, rhs) => {
             cmp(*rhs, *lhs, "setle");
         }
+        Node::Return(rhs) => {
+            stmt(*rhs);
+            println!("  jmp .L.return");
+        }
     }
 }
 
@@ -129,6 +133,7 @@ pub fn generate(stmts: Vec<Node>) {
 
     stmts.into_iter().for_each(stmt);
 
+    println!(".L.return:");
     println!("  mov %rbp, %rsp");
     println!("  pop %rbp");
     println!("  ret");

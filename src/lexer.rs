@@ -31,6 +31,7 @@ pub enum Token {
     LessThan,
     LessThanEqual,
     SemiColon,
+    Return,
 }
 
 impl<'a> InputLength for Token {
@@ -66,6 +67,10 @@ where
         let (i, value) = parser.parse(i)?;
         Ok((i, SToken { position, value }))
     }
+}
+
+fn keyword(input: Span) -> IResult<Span, SToken> {
+    stoken(value(Token::Return, tag("return")))(input)
 }
 
 fn identifier(input: Span) -> IResult<Span, SToken> {
@@ -107,7 +112,7 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
 }
 
 fn token(input: Span) -> IResult<Span, SToken> {
-    alt((identifier, integer, punctuator))(input)
+    alt((keyword, identifier, integer, punctuator))(input)
 }
 
 fn tokens(input: Span) -> IResult<Span, Vec<SToken>> {
