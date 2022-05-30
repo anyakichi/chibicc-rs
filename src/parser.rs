@@ -4,7 +4,7 @@ use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
 use anyhow::Result;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
-use nom::combinator::{map, opt};
+use nom::combinator::{map, opt, value};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::many0;
 use nom::sequence::{delimited, pair, preceded, terminated};
@@ -259,7 +259,11 @@ fn expr(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn stmt(input: Tokens) -> IResult<Tokens, Node> {
-    terminated(alt((r#return, expr)), tag(Token::SemiColon))(input)
+    alt((
+        terminated(expr, tag(Token::SemiColon)),
+        terminated(r#return, tag(Token::SemiColon)),
+        value(Node::Block(vec![]), tag(Token::SemiColon)),
+    ))(input)
 }
 
 fn block(input: Tokens) -> IResult<Tokens, Node> {
