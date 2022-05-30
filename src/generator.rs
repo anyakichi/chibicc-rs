@@ -1,4 +1,15 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use once_cell::sync::Lazy;
+
 use crate::parser::Node;
+
+static VARIABLES: Lazy<Mutex<HashMap<String, i64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn align_to(n: i64, align: i64) -> i64 {
+    (n + align - 1) / align * align
+}
 
 fn push() {
     println!("  push %rax");
@@ -6,6 +17,22 @@ fn push() {
 
 fn pop(r: &str) {
     println!("  pop {}", r);
+}
+
+fn find_variable(node: &Node) -> i64 {
+    match node {
+        Node::Assign(lhs, rhs) => {
+            let a = find_variable(&*lhs);
+            let b = find_variable(&*rhs);
+            a.max(b)
+        }
+        Node::Var(name) => {
+            let mut vars = VARIABLES.lock().unwrap();
+            let offset = 8 * vars.len() as i64;
+            *vars.entry(name.to_string()).or_insert(offset) + 8
+        }
+        _ => 0,
+    }
 }
 
 fn stmt(node: Node) {
@@ -16,9 +43,10 @@ fn stmt(node: Node) {
         pop("%rdi");
     }
 
-    fn gen_addr(name: char) {
-        let offset = (name as i64 - 'a' as i64 + 1) * 8;
-        println!("  lea {}(%rbp), %rax", -offset);
+    fn gen_addr(name: &str) {
+        let vars = VARIABLES.lock().unwrap();
+        let offset = vars.get(name).unwrap();
+        println!("  lea {}(%rbp), %rax", offset);
     }
 
     fn cmp(rhs: Node, lhs: Node, op: &str) {
@@ -31,7 +59,7 @@ fn stmt(node: Node) {
     match node {
         Node::Assign(lhs, rhs) => {
             if let Node::Var(name) = *lhs {
-                gen_addr(name);
+                gen_addr(&name);
             } else {
                 panic!("unexpedted lhs of assign")
             }
@@ -41,7 +69,7 @@ fn stmt(node: Node) {
             println!("  mov %rax, (%rdi)");
         }
         Node::Var(name) => {
-            gen_addr(name);
+            gen_addr(&name);
             println!("  mov (%rax), %rax");
         }
         Node::Integer(i) => {
@@ -84,12 +112,20 @@ fn stmt(node: Node) {
 }
 
 pub fn generate(stmts: Vec<Node>) {
+    let stack_size = stmts.iter().map(find_variable).max().unwrap_or(0);
+    {
+        let mut vars = VARIABLES.lock().unwrap();
+        for (_, v) in vars.iter_mut() {
+            *v -= stack_size;
+        }
+    }
+
     println!("  .globl main");
     println!("main:");
 
     println!("  push %rbp");
     println!("  mov %rsp, %rbp");
-    println!("  sub $208, %rsp");
+    println!("  sub ${}, %rsp", align_to(stack_size, 16));
 
     stmts.into_iter().for_each(stmt);
 

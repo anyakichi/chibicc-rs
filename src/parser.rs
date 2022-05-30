@@ -115,7 +115,7 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
         if self.0.is_empty() {
             return CompareResult::Incomplete;
         }
-        match (self.0[0].value, t) {
+        match (&self.0[0].value, &t) {
             (Token::Integer(_), Token::Integer(_)) => CompareResult::Ok,
             _ => self.compare(t),
         }
@@ -125,7 +125,7 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Assign(Box<Node>, Box<Node>),
-    Var(char),
+    Var(String),
     Integer(i64),
     Neg(Box<Node>),
     Add(Box<Node>, Box<Node>),
@@ -144,8 +144,8 @@ fn parens(input: Tokens) -> IResult<Tokens, Node> {
 
 fn identifier(input: Tokens) -> IResult<Tokens, Node> {
     let (i1, t) = take(1usize)(input)?;
-    match t[0].value {
-        Token::Ident(i) => Ok((i1, Node::Var(i))),
+    match &t[0].value {
+        Token::Ident(i) => Ok((i1, Node::Var(i.to_string()))),
         _ => Err(Err::Error(Error::new(input, ErrorKind::Tag))),
     }
 }
@@ -172,7 +172,7 @@ fn unary(input: Tokens) -> IResult<Tokens, Node> {
     ))(input)
 }
 
-fn infix_expr(token: Token, lhs: Node, rhs: Node) -> Node {
+fn infix_expr(token: &Token, lhs: Node, rhs: Node) -> Node {
     match token {
         Token::Plus => Node::Add(Box::new(lhs), Box::new(rhs)),
         Token::Minus => Node::Sub(Box::new(lhs), Box::new(rhs)),
@@ -199,7 +199,7 @@ where
     E: ParseError<Tokens<'a>>,
 {
     map(pair(parser, many0(pair(op, parser))), |(i, xs)| {
-        xs.into_iter().fold(i, |l, (o, r)| infix_expr(*o[0], l, r))
+        xs.into_iter().fold(i, |l, (o, r)| infix_expr(&*o[0], l, r))
     })
 }
 
@@ -215,7 +215,7 @@ where
     E: ParseError<Tokens<'a>>,
 {
     map(pair(left, opt(pair(op, right))), |(l, opt)| match opt {
-        Some((o, r)) => infix_expr(*o[0], l, r),
+        Some((o, r)) => infix_expr(&*o[0], l, r),
         None => l,
     })
 }

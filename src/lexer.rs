@@ -3,20 +3,19 @@ use std::str::FromStr;
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::satisfy;
-use nom::character::complete::{digit1, multispace0};
-use nom::combinator::{eof, map, map_res, value};
+use nom::character::complete::{alpha1, alphanumeric1, digit1, multispace0};
+use nom::combinator::{eof, map, map_res, recognize, value};
 use nom::error::Error;
 use nom::error::ParseError;
-use nom::multi::many0;
-use nom::sequence::delimited;
+use nom::multi::{many0, many0_count};
+use nom::sequence::{delimited, pair};
 use nom::{Finish, IResult, InputLength, Parser};
 use nom_locate::{position, LocatedSpan};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Token {
     Eof,
-    Ident(char),
+    Ident(String),
     Integer(i64),
     Assign,
     Plus,
@@ -69,8 +68,14 @@ where
     }
 }
 
-fn identifier(i: Span) -> IResult<Span, SToken> {
-    stoken(map(satisfy(|x: char| x.is_alphabetic()), Token::Ident))(i)
+fn identifier(input: Span) -> IResult<Span, SToken> {
+    stoken(map(
+        recognize(pair(
+            alt((alpha1, tag("_"))),
+            many0_count(alt((alphanumeric1, tag("_")))),
+        )),
+        |x: Span| Token::Ident(x.fragment().to_string()),
+    ))(input)
 }
 
 fn integer(input: Span) -> IResult<Span, SToken> {

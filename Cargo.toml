@@ -9,6 +9,7 @@ edition = "2021"
 anyhow = "1"
 nom = "7"
 nom_locate = "4"
+once_cell = "1.12"
 
 [lib]
 name = "chibicc"
