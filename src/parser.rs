@@ -137,6 +137,7 @@ pub enum Node {
     Le(Box<Node>, Box<Node>),
     Lt(Box<Node>, Box<Node>),
     Return(Box<Node>),
+    Block(Vec<Node>),
 }
 
 fn parens(input: Tokens) -> IResult<Tokens, Node> {
@@ -261,6 +262,17 @@ fn stmt(input: Tokens) -> IResult<Tokens, Node> {
     terminated(alt((r#return, expr)), tag(Token::SemiColon))(input)
 }
 
-pub fn parse(input: Tokens) -> IResult<Tokens, Vec<Node>> {
-    terminated(many0(stmt), tag(Token::Eof))(input)
+fn block(input: Tokens) -> IResult<Tokens, Node> {
+    map(
+        delimited(
+            tag(Token::LBrace),
+            many0(alt((block, stmt))),
+            tag(Token::RBrace),
+        ),
+        Node::Block,
+    )(input)
+}
+
+pub fn parse(input: Tokens) -> IResult<Tokens, Node> {
+    terminated(block, tag(Token::Eof))(input)
 }

@@ -21,6 +21,7 @@ fn pop(r: &str) {
 
 fn find_variable(node: &Node) -> i64 {
     match node {
+        Node::Block(block) => block.iter().map(find_variable).max().unwrap_or(0),
         Node::Assign(lhs, rhs) => {
             let a = find_variable(&*lhs);
             let b = find_variable(&*rhs);
@@ -35,11 +36,11 @@ fn find_variable(node: &Node) -> i64 {
     }
 }
 
-fn stmt(node: Node) {
+fn generate1(node: Node) {
     fn gen(rhs: Node, lhs: Node) {
-        stmt(rhs);
+        generate1(rhs);
         push();
-        stmt(lhs);
+        generate1(lhs);
         pop("%rdi");
     }
 
@@ -64,7 +65,7 @@ fn stmt(node: Node) {
                 panic!("unexpedted lhs of assign")
             }
             push();
-            stmt(*rhs);
+            generate1(*rhs);
             pop("%rdi");
             println!("  mov %rax, (%rdi)");
         }
@@ -76,7 +77,7 @@ fn stmt(node: Node) {
             println!("  mov ${}, %rax", i)
         }
         Node::Neg(lhs) => {
-            stmt(*lhs);
+            generate1(*lhs);
             println!("  neg %rax");
         }
         Node::Add(lhs, rhs) => {
@@ -109,14 +110,17 @@ fn stmt(node: Node) {
             cmp(*rhs, *lhs, "setle");
         }
         Node::Return(rhs) => {
-            stmt(*rhs);
+            generate1(*rhs);
             println!("  jmp .L.return");
+        }
+        Node::Block(rhs) => {
+            rhs.into_iter().for_each(generate1);
         }
     }
 }
 
-pub fn generate(stmts: Vec<Node>) {
-    let stack_size = stmts.iter().map(find_variable).max().unwrap_or(0);
+pub fn generate(node: Node) {
+    let stack_size = find_variable(&node);
     {
         let mut vars = VARIABLES.lock().unwrap();
         for (_, v) in vars.iter_mut() {
@@ -131,7 +135,7 @@ pub fn generate(stmts: Vec<Node>) {
     println!("  mov %rsp, %rbp");
     println!("  sub ${}, %rsp", align_to(stack_size, 16));
 
-    stmts.into_iter().for_each(stmt);
+    generate1(node);
 
     println!(".L.return:");
     println!("  mov %rbp, %rsp");
