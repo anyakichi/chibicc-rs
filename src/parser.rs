@@ -331,13 +331,13 @@ fn block(input: Tokens) -> IResult<Tokens, Statement> {
 
 fn stmt(input: Tokens) -> IResult<Tokens, Statement> {
     alt((
-        block,
         if_stmt,
         for_stmt,
         while_stmt,
         map(terminated(expr, tag(Token::SemiColon)), Statement::Expr),
         terminated(r#return, tag(Token::SemiColon)),
         value(Statement::Block(vec![]), tag(Token::SemiColon)),
+        block,
     ))(input)
 }
 

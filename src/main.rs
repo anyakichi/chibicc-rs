@@ -27,9 +27,23 @@ fn main() -> Result<()> {
     };
 
     let tokens = Tokens::new(&tokens);
-    let (_, result) = parse(tokens).unwrap();
-
-    generate(result);
+    match parse(tokens) {
+        Ok((_, result)) => generate(result),
+        Err(nom::Err::Error(e)) => {
+            println!("{}", &args[1]);
+            println!(
+                "{}^ invalid token",
+                " ".repeat(
+                    e.input
+                        .first()
+                        .map(|x| x.position.get_utf8_column() - 1)
+                        .unwrap_or(0)
+                )
+            );
+            std::process::exit(1);
+        }
+        e => panic!("{:?}", e),
+    }
 
     Ok(())
 }
