@@ -151,7 +151,7 @@ fn generate_stmt(stmt: Statement) {
             }
             println!(".L.end.{}:", c);
         }
-        Statement::For {
+        Statement::Iter {
             init,
             cond,
             next,
