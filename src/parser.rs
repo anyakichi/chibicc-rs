@@ -148,6 +148,8 @@ pub enum Node {
     Var(String),
     Integer(i64),
     Neg(Box<Node>),
+    Addr(Box<Node>),
+    Deref(Box<Node>),
     Add(Box<Node>, Box<Node>),
     Sub(Box<Node>, Box<Node>),
     Mul(Box<Node>, Box<Node>),
@@ -191,6 +193,12 @@ fn unary(input: Tokens) -> IResult<Tokens, Node> {
         preceded(tag(Token::Plus), unary),
         map(preceded(tag(Token::Minus), unary), |x| {
             Node::Neg(Box::new(x))
+        }),
+        map(preceded(tag(Token::And), unary), |x| {
+            Node::Addr(Box::new(x))
+        }),
+        map(preceded(tag(Token::Multiply), unary), |x| {
+            Node::Deref(Box::new(x))
         }),
         primary,
     ))(input)

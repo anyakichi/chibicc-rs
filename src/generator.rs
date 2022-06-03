@@ -72,10 +72,16 @@ fn generate_expr(node: Node) {
 
     match node {
         Node::Assign(lhs, rhs) => {
-            if let Node::Var(name) = *lhs {
-                gen_addr(&name);
-            } else {
-                panic!("unexpedted lhs of assign")
+            match *lhs {
+                Node::Var(name) => {
+                    gen_addr(&name);
+                }
+                Node::Deref(lhs) => {
+                    generate_expr(*lhs);
+                }
+                _ => {
+                    panic!("unexpedted lhs of assign")
+                }
             }
             push();
             generate_expr(*rhs);
@@ -93,6 +99,14 @@ fn generate_expr(node: Node) {
             generate_expr(*lhs);
             println!("  neg %rax");
         }
+        Node::Deref(lhs) => {
+            generate_expr(*lhs);
+            println!("  mov (%rax), %rax");
+        }
+        Node::Addr(lhs) => match *lhs {
+            Node::Var(name) => gen_addr(&name),
+            _ => panic!("unexpected lhs of addr"),
+        },
         Node::Add(lhs, rhs) => {
             gen(*rhs, *lhs);
             println!("  add %rdi, %rax");
