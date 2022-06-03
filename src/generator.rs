@@ -1,11 +1,17 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::parser::Node;
+use crate::parser::{Node, Statement};
 
 static VARIABLES: Lazy<Mutex<HashMap<String, i64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn count() -> usize {
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    COUNT.fetch_add(1, Ordering::SeqCst)
+}
 
 fn align_to(n: i64, align: i64) -> i64 {
     (n + align - 1) / align * align
@@ -19,28 +25,35 @@ fn pop(r: &str) {
     println!("  pop {}", r);
 }
 
-fn find_variable(node: &Node) -> i64 {
-    match node {
-        Node::Block(block) => block.iter().map(find_variable).max().unwrap_or(0),
-        Node::Assign(lhs, rhs) => {
-            let a = find_variable(&*lhs);
-            let b = find_variable(&*rhs);
-            a.max(b)
+fn find_variable(stmt: &Statement) -> i64 {
+    fn find_in_expr(node: &Node) -> i64 {
+        match node {
+            Node::Assign(lhs, rhs) => {
+                let a = find_in_expr(&*lhs);
+                let b = find_in_expr(&*rhs);
+                a.max(b)
+            }
+            Node::Var(name) => {
+                let mut vars = VARIABLES.lock().unwrap();
+                let offset = 8 * vars.len() as i64;
+                *vars.entry(name.to_string()).or_insert(offset) + 8
+            }
+            _ => 0,
         }
-        Node::Var(name) => {
-            let mut vars = VARIABLES.lock().unwrap();
-            let offset = 8 * vars.len() as i64;
-            *vars.entry(name.to_string()).or_insert(offset) + 8
-        }
+    }
+
+    match stmt {
+        Statement::Block(block) => block.iter().map(find_variable).max().unwrap_or(0),
+        Statement::Expr(expr) => find_in_expr(expr),
         _ => 0,
     }
 }
 
-fn generate1(node: Node) {
+fn generate_expr(node: Node) {
     fn gen(rhs: Node, lhs: Node) {
-        generate1(rhs);
+        generate_expr(rhs);
         push();
-        generate1(lhs);
+        generate_expr(lhs);
         pop("%rdi");
     }
 
@@ -65,7 +78,7 @@ fn generate1(node: Node) {
                 panic!("unexpedted lhs of assign")
             }
             push();
-            generate1(*rhs);
+            generate_expr(*rhs);
             pop("%rdi");
             println!("  mov %rax, (%rdi)");
         }
@@ -77,7 +90,7 @@ fn generate1(node: Node) {
             println!("  mov ${}, %rax", i)
         }
         Node::Neg(lhs) => {
-            generate1(*lhs);
+            generate_expr(*lhs);
             println!("  neg %rax");
         }
         Node::Add(lhs, rhs) => {
@@ -109,18 +122,40 @@ fn generate1(node: Node) {
         Node::Le(lhs, rhs) => {
             cmp(*rhs, *lhs, "setle");
         }
-        Node::Return(rhs) => {
-            generate1(*rhs);
+    }
+}
+
+fn generate_stmt(stmt: Statement) {
+    match stmt {
+        Statement::Block(s) => {
+            s.into_iter().for_each(generate_stmt);
+        }
+        Statement::Expr(expr) => {
+            generate_expr(expr);
+        }
+        Statement::Return(expr) => {
+            generate_expr(expr);
             println!("  jmp .L.return");
         }
-        Node::Block(rhs) => {
-            rhs.into_iter().for_each(generate1);
+        Statement::If { cond, then, r#else } => {
+            let c = count();
+            generate_expr(cond);
+            println!("  cmp $0, %rax");
+            println!("  je  .L.else.{}", c);
+            generate_stmt(*then);
+            println!("  jmp .L.end.{}", c);
+            println!(".L.else.{}:", c);
+
+            if let Some(e) = r#else {
+                generate_stmt(*e);
+            }
+            println!(".L.end.{}:", c);
         }
     }
 }
 
-pub fn generate(node: Node) {
-    let stack_size = find_variable(&node);
+pub fn generate(stmt: Statement) {
+    let stack_size = find_variable(&stmt);
     {
         let mut vars = VARIABLES.lock().unwrap();
         for (_, v) in vars.iter_mut() {
@@ -135,7 +170,7 @@ pub fn generate(node: Node) {
     println!("  mov %rsp, %rbp");
     println!("  sub ${}, %rsp", align_to(stack_size, 16));
 
-    generate1(node);
+    generate_stmt(stmt);
 
     println!(".L.return:");
     println!("  mov %rbp, %rsp");

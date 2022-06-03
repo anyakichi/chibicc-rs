@@ -17,6 +17,11 @@ pub enum Token {
     Eof,
     Ident(String),
     Integer(i64),
+    // Keywords
+    If,
+    Else,
+    Return,
+    // Punctuators
     Assign,
     Plus,
     Minus,
@@ -33,7 +38,6 @@ pub enum Token {
     LessThan,
     LessThanEqual,
     SemiColon,
-    Return,
 }
 
 impl<'a> InputLength for Token {
@@ -72,7 +76,11 @@ where
 }
 
 fn keyword(input: Span) -> IResult<Span, SToken> {
-    stoken(value(Token::Return, tag("return")))(input)
+    stoken(alt((
+        value(Token::Else, tag("else")),
+        value(Token::If, tag("if")),
+        value(Token::Return, tag("return")),
+    )))(input)
 }
 
 fn identifier(input: Span) -> IResult<Span, SToken> {

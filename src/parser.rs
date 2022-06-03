@@ -7,7 +7,7 @@ use nom::bytes::complete::{tag, take};
 use nom::combinator::{map, opt, value};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::many0;
-use nom::sequence::{delimited, pair, preceded, terminated};
+use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{
     Compare, CompareResult, Err, IResult, InputIter, InputLength, InputTake, Needed, Parser, Slice,
 };
@@ -122,6 +122,20 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
     }
 }
 
+pub type Program = Vec<Statement>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Statement {
+    Block(Vec<Statement>),
+    Expr(Node),
+    Return(Node),
+    If {
+        cond: Node,
+        then: Box<Statement>,
+        r#else: Option<Box<Statement>>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Assign(Box<Node>, Box<Node>),
@@ -136,16 +150,14 @@ pub enum Node {
     Ne(Box<Node>, Box<Node>),
     Le(Box<Node>, Box<Node>),
     Lt(Box<Node>, Box<Node>),
-    Return(Box<Node>),
-    Block(Vec<Node>),
 }
 
 fn parens(input: Tokens) -> IResult<Tokens, Node> {
     delimited(tag(Token::LParen), expr, tag(Token::RParen))(input)
 }
 
-fn r#return(input: Tokens) -> IResult<Tokens, Node> {
-    preceded(tag(Token::Return), map(expr, |x| Node::Return(Box::new(x))))(input)
+fn r#return(input: Tokens) -> IResult<Tokens, Statement> {
+    preceded(tag(Token::Return), map(expr, Statement::Return))(input)
 }
 
 fn identifier(input: Tokens) -> IResult<Tokens, Node> {
@@ -258,25 +270,35 @@ fn expr(input: Tokens) -> IResult<Tokens, Node> {
     assign(input)
 }
 
-fn stmt(input: Tokens) -> IResult<Tokens, Node> {
-    alt((
-        terminated(expr, tag(Token::SemiColon)),
-        terminated(r#return, tag(Token::SemiColon)),
-        value(Node::Block(vec![]), tag(Token::SemiColon)),
-    ))(input)
-}
-
-fn block(input: Tokens) -> IResult<Tokens, Node> {
+fn if_stmt(input: Tokens) -> IResult<Tokens, Statement> {
     map(
-        delimited(
-            tag(Token::LBrace),
-            many0(alt((block, stmt))),
-            tag(Token::RBrace),
-        ),
-        Node::Block,
+        tuple((
+            tag(Token::If),
+            parens,
+            map(stmt, Box::new),
+            opt(map(preceded(tag(Token::Else), stmt), Box::new)),
+        )),
+        |(_, cond, then, r#else)| Statement::If { cond, then, r#else },
     )(input)
 }
 
-pub fn parse(input: Tokens) -> IResult<Tokens, Node> {
+fn block(input: Tokens) -> IResult<Tokens, Statement> {
+    map(
+        delimited(tag(Token::LBrace), many0(stmt), tag(Token::RBrace)),
+        Statement::Block,
+    )(input)
+}
+
+fn stmt(input: Tokens) -> IResult<Tokens, Statement> {
+    alt((
+        block,
+        if_stmt,
+        map(terminated(expr, tag(Token::SemiColon)), Statement::Expr),
+        terminated(r#return, tag(Token::SemiColon)),
+        value(Statement::Block(vec![]), tag(Token::SemiColon)),
+    ))(input)
+}
+
+pub fn parse(input: Tokens) -> IResult<Tokens, Statement> {
     terminated(block, tag(Token::Eof))(input)
 }
