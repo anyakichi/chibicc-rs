@@ -134,6 +134,12 @@ pub enum Statement {
         then: Box<Statement>,
         r#else: Option<Box<Statement>>,
     },
+    For {
+        init: Option<Node>,
+        cond: Option<Node>,
+        next: Option<Node>,
+        then: Box<Statement>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -282,6 +288,28 @@ fn if_stmt(input: Tokens) -> IResult<Tokens, Statement> {
     )(input)
 }
 
+fn for_stmt(input: Tokens) -> IResult<Tokens, Statement> {
+    map(
+        tuple((
+            tag(Token::For),
+            tag(Token::LParen),
+            opt(expr),
+            tag(Token::SemiColon),
+            opt(expr),
+            tag(Token::SemiColon),
+            opt(expr),
+            tag(Token::RParen),
+            map(stmt, Box::new),
+        )),
+        |(_, _, init, _, cond, _, next, _, then)| Statement::For {
+            init,
+            cond,
+            next,
+            then,
+        },
+    )(input)
+}
+
 fn block(input: Tokens) -> IResult<Tokens, Statement> {
     map(
         delimited(tag(Token::LBrace), many0(stmt), tag(Token::RBrace)),
@@ -293,6 +321,7 @@ fn stmt(input: Tokens) -> IResult<Tokens, Statement> {
     alt((
         block,
         if_stmt,
+        for_stmt,
         map(terminated(expr, tag(Token::SemiColon)), Statement::Expr),
         terminated(r#return, tag(Token::SemiColon)),
         value(Statement::Block(vec![]), tag(Token::SemiColon)),

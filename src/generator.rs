@@ -151,6 +151,29 @@ fn generate_stmt(stmt: Statement) {
             }
             println!(".L.end.{}:", c);
         }
+        Statement::For {
+            init,
+            cond,
+            next,
+            then,
+        } => {
+            let c = count();
+            if let Some(init) = init {
+                generate_expr(init);
+            }
+            println!(".L.begin.{}:", c);
+            if let Some(cond) = cond {
+                generate_expr(cond);
+                println!("  cmp $0, %rax");
+                println!("  je  .L.end.{}", c);
+            }
+            generate_stmt(*then);
+            if let Some(next) = next {
+                generate_expr(next);
+            }
+            println!("  jmp .L.begin.{}", c);
+            println!(".L.end.{}:", c);
+        }
     }
 }
 

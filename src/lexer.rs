@@ -20,6 +20,7 @@ pub enum Token {
     // Keywords
     If,
     Else,
+    For,
     Return,
     // Punctuators
     Assign,
@@ -78,6 +79,7 @@ where
 fn keyword(input: Span) -> IResult<Span, SToken> {
     stoken(alt((
         value(Token::Else, tag("else")),
+        value(Token::For, tag("for")),
         value(Token::If, tag("if")),
         value(Token::Return, tag("return")),
     )))(input)
