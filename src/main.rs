@@ -7,10 +7,10 @@ use anyhow::Result;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
 use nom::character::complete::{digit1, multispace0};
-use nom::combinator::{map, map_res, value};
+use nom::combinator::{eof, map, map_res, value};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::many0;
-use nom::sequence::delimited;
+use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::{
     Compare, CompareResult, Err, Finish, IResult, InputIter, InputLength, InputTake, Needed,
     Parser, Slice,
@@ -64,14 +64,14 @@ where
     }
 }
 
-fn integer(i: Span) -> IResult<Span, SToken> {
+fn integer(input: Span) -> IResult<Span, SToken> {
     stoken(map(
         map_res(digit1, |x: Span| FromStr::from_str(x.fragment())),
         Token::Integer,
-    ))(i)
+    ))(input)
 }
 
-fn punctuator(i: Span) -> IResult<Span, SToken> {
+fn punctuator(input: Span) -> IResult<Span, SToken> {
     let f = |s, t| stoken(value(t, tag(s)));
 
     alt((
@@ -81,26 +81,23 @@ fn punctuator(i: Span) -> IResult<Span, SToken> {
         f("/", Token::Divide),
         f("(", Token::LParen),
         f(")", Token::RParen),
-    ))(i)
+    ))(input)
 }
 
-fn token(i: Span) -> IResult<Span, SToken> {
-    alt((integer, punctuator))(i)
+fn token(input: Span) -> IResult<Span, SToken> {
+    alt((integer, punctuator))(input)
 }
 
-fn tokens(i: Span) -> IResult<Span, Vec<SToken>> {
-    let (i, mut tokens) = many0(delimited(multispace0, token, multispace0))(i)?;
-    let (i, position) = position(i)?;
+fn tokens(input: Span) -> IResult<Span, Vec<SToken>> {
+    let (i, mut tokens) = many0(delimited(multispace0, token, multispace0))(input)?;
+    let (i, t) = stoken(value(Token::Eof, eof))(i)?;
 
-    tokens.push(SToken {
-        position,
-        value: Token::Eof,
-    });
+    tokens.push(t);
     Ok((i, tokens))
 }
 
-fn lex(i: Span) -> IResult<Span, Vec<SToken>> {
-    tokens(i)
+fn lex(input: Span) -> IResult<Span, Vec<SToken>> {
+    tokens(input)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -201,7 +198,13 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
     }
 
     fn compare_no_case(&self, t: Token) -> CompareResult {
-        self.compare(t)
+        if self.0.is_empty() {
+            return CompareResult::Incomplete;
+        }
+        match (self.0[0].value, t) {
+            (Token::Integer(_), Token::Integer(_)) => CompareResult::Ok,
+            _ => self.compare(t),
+        }
     }
 }
 
@@ -230,46 +233,61 @@ fn parse_primary(input: Tokens) -> IResult<Tokens, Node> {
     alt((parse_parens, parse_integer))(input)
 }
 
+fn fold_exprs(init: Node, remainder: Vec<(Token, Node)>) -> Node {
+    remainder
+        .into_iter()
+        .fold(init, |acc, (token, expr)| match token {
+            Token::Plus => Node::Add(Box::new(acc), Box::new(expr)),
+            Token::Minus => Node::Sub(Box::new(acc), Box::new(expr)),
+            Token::Multiply => Node::Mul(Box::new(acc), Box::new(expr)),
+            Token::Divide => Node::Div(Box::new(acc), Box::new(expr)),
+            _ => panic!("unexpected token"),
+        })
+}
+
+fn parse_infix<I: InputLength + InputTake + Compare<Token>, O, E, F>(
+    token: Token,
+    parser: F,
+) -> impl FnMut(I) -> IResult<I, (Token, O), E>
+where
+    F: Parser<I, O, E>,
+    E: ParseError<I>,
+{
+    map(preceded(tag(token), parser), move |r| (token, r))
+}
+
 fn parse_mul(input: Tokens) -> IResult<Tokens, Node> {
-    let (i1, lhs) = parse_primary(input)?;
-    let (i2, t) = take(1usize)(i1)?;
-    match t[0].value {
-        Token::Multiply => {
-            let (i3, rhs) = parse_primary(i2)?;
-            Ok((i3, Node::Mul(Box::new(lhs), Box::new(rhs))))
-        }
-        Token::Divide => {
-            let (i3, rhs) = parse_primary(i2)?;
-            Ok((i3, Node::Div(Box::new(lhs), Box::new(rhs))))
-        }
-        _ => Ok((i1, lhs)),
-    }
+    map(
+        pair(
+            parse_primary,
+            many0(alt((
+                parse_infix(Token::Multiply, parse_primary),
+                parse_infix(Token::Divide, parse_primary),
+            ))),
+        ),
+        |(i, r)| fold_exprs(i, r),
+    )(input)
 }
 
 fn parse_add(input: Tokens) -> IResult<Tokens, Node> {
-    let (i1, lhs) = parse_mul(input)?;
-    let (i2, t) = take(1usize)(i1)?;
-    match t[0].value {
-        Token::Plus => {
-            let (i3, rhs) = parse_add(i2)?;
-            Ok((i3, Node::Add(Box::new(lhs), Box::new(rhs))))
-        }
-        Token::Minus => {
-            let (i3, rhs) = parse_add(i2)?;
-            Ok((i3, Node::Sub(Box::new(lhs), Box::new(rhs))))
-        }
-        _ => Ok((i1, lhs)),
-    }
+    map(
+        pair(
+            parse_mul,
+            many0(alt((
+                parse_infix(Token::Plus, parse_mul),
+                parse_infix(Token::Minus, parse_mul),
+            ))),
+        ),
+        |(i, r)| fold_exprs(i, r),
+    )(input)
 }
 
-fn parse_expr(i: Tokens) -> IResult<Tokens, Node> {
-    parse_add(i)
+fn parse_expr(input: Tokens) -> IResult<Tokens, Node> {
+    parse_add(input)
 }
 
-fn parse_tokens(i: Tokens) -> IResult<Tokens, Node> {
-    let (i, r) = parse_expr(i)?;
-    let (i, _) = tag(Token::Eof)(i)?;
-    Ok((i, r))
+fn parse_tokens(input: Tokens) -> IResult<Tokens, Node> {
+    terminated(parse_expr, tag(Token::Eof))(input)
 }
 
 fn push() {
@@ -325,20 +343,18 @@ fn main() -> Result<()> {
     }
 
     let input = Span::new(&args[1]);
-    let (rest, tokens) = lex(input).finish().unwrap();
-    if !rest.is_empty() {
-        println!("{}", &args[1]);
-        println!(
-            "{}^ invalid token",
-            " ".repeat(
-                tokens
-                    .last()
-                    .map(|x| x.position.get_utf8_column() - 1)
-                    .unwrap_or(0)
-            )
-        );
-        std::process::exit(1);
-    }
+    let x = lex(input).finish();
+    let tokens = match x {
+        Ok((_, t)) => t,
+        Err(e) => {
+            println!("{}", &args[1]);
+            println!(
+                "{}^ invalid token",
+                " ".repeat(e.input.get_utf8_column() - 1)
+            );
+            std::process::exit(1);
+        }
+    };
 
     let tokens = Tokens::new(&tokens);
     let (_, result) = parse_tokens(tokens).unwrap();
