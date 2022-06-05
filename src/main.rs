@@ -10,7 +10,7 @@ use nom::character::complete::{digit1, multispace0};
 use nom::combinator::{eof, map, map_res, value};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::many0;
-use nom::sequence::{delimited, pair, preceded, terminated};
+use nom::sequence::{delimited, pair, terminated};
 use nom::{
     Compare, CompareResult, Err, Finish, IResult, InputIter, InputLength, InputTake, Needed,
     Parser, Slice,
@@ -245,41 +245,30 @@ fn fold_exprs(init: Node, remainder: Vec<(Token, Node)>) -> Node {
         })
 }
 
-fn parse_infix<I: InputLength + InputTake + Compare<Token>, O, E, F>(
-    token: Token,
-    parser: F,
-) -> impl FnMut(I) -> IResult<I, (Token, O), E>
+fn parse_infix<'a, E, F, G>(
+    first: F,
+    second: G,
+) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Node, E>
 where
-    F: Parser<I, O, E>,
-    E: ParseError<I>,
+    F: Parser<Tokens<'a>, Tokens<'a>, E>,
+    G: Parser<Tokens<'a>, Node, E> + Copy,
+    E: ParseError<Tokens<'a>>,
 {
-    map(preceded(tag(token), parser), move |r| (token, r))
+    map(
+        pair(second, many0(pair(map(first, |x| *x[0]), second))),
+        |(i, r)| fold_exprs(i, r),
+    )
 }
 
 fn parse_mul(input: Tokens) -> IResult<Tokens, Node> {
-    map(
-        pair(
-            parse_primary,
-            many0(alt((
-                parse_infix(Token::Multiply, parse_primary),
-                parse_infix(Token::Divide, parse_primary),
-            ))),
-        ),
-        |(i, r)| fold_exprs(i, r),
+    parse_infix(
+        alt((tag(Token::Multiply), tag(Token::Divide))),
+        parse_primary,
     )(input)
 }
 
 fn parse_add(input: Tokens) -> IResult<Tokens, Node> {
-    map(
-        pair(
-            parse_mul,
-            many0(alt((
-                parse_infix(Token::Plus, parse_mul),
-                parse_infix(Token::Minus, parse_mul),
-            ))),
-        ),
-        |(i, r)| fold_exprs(i, r),
-    )(input)
+    parse_infix(alt((tag(Token::Plus), tag(Token::Minus))), parse_mul)(input)
 }
 
 fn parse_expr(input: Tokens) -> IResult<Tokens, Node> {
