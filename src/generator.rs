@@ -6,6 +6,11 @@ use once_cell::sync::Lazy;
 
 use crate::parser::{Node, Statement};
 
+enum Type {
+    Integer,
+    Pointer,
+}
+
 static VARIABLES: Lazy<Mutex<HashMap<String, i64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn count() -> usize {
@@ -49,12 +54,13 @@ fn find_variable(stmt: &Statement) -> i64 {
     }
 }
 
-fn generate_expr(node: Node) {
-    fn gen(rhs: Node, lhs: Node) {
-        generate_expr(rhs);
+fn generate_expr(node: Node) -> Type {
+    fn gen(rhs: Node, lhs: Node) -> (Type, Type) {
+        let rt = generate_expr(rhs);
         push();
-        generate_expr(lhs);
+        let lt = generate_expr(lhs);
         pop("%rdi");
+        (rt, lt)
     }
 
     fn gen_addr(name: &str) {
@@ -84,57 +90,100 @@ fn generate_expr(node: Node) {
                 }
             }
             push();
-            generate_expr(*rhs);
+            let t = generate_expr(*rhs);
             pop("%rdi");
             println!("  mov %rax, (%rdi)");
+            t
         }
         Node::Var(name) => {
             gen_addr(&name);
             println!("  mov (%rax), %rax");
+            Type::Integer
         }
         Node::Integer(i) => {
-            println!("  mov ${}, %rax", i)
+            println!("  mov ${}, %rax", i);
+            Type::Integer
         }
         Node::Neg(lhs) => {
             generate_expr(*lhs);
             println!("  neg %rax");
+            Type::Integer
         }
         Node::Deref(lhs) => {
-            generate_expr(*lhs);
+            let t = generate_expr(*lhs);
             println!("  mov (%rax), %rax");
+            t
         }
         Node::Addr(lhs) => match *lhs {
-            Node::Var(name) => gen_addr(&name),
+            Node::Var(name) => {
+                gen_addr(&name);
+                Type::Pointer
+            }
             _ => panic!("unexpected lhs of addr"),
         },
         Node::Add(lhs, rhs) => {
-            gen(*rhs, *lhs);
+            let t = match gen(*rhs, *lhs) {
+                (Type::Integer, Type::Integer) => Type::Integer,
+                (Type::Integer, Type::Pointer) => {
+                    println!("  imul $8, %rdi");
+                    Type::Pointer
+                }
+                (Type::Pointer, Type::Integer) => {
+                    println!("  imul $8, %rax");
+                    Type::Pointer
+                }
+                (Type::Pointer, Type::Pointer) => panic!("invalid operation"),
+            };
             println!("  add %rdi, %rax");
+            t
         }
-        Node::Sub(lhs, rhs) => {
-            gen(*rhs, *lhs);
-            println!("  sub %rdi, %rax");
-        }
+        Node::Sub(lhs, rhs) => match gen(*rhs, *lhs) {
+            (Type::Integer, Type::Integer) => {
+                println!("  sub %rdi, %rax");
+                Type::Integer
+            }
+            (Type::Integer, Type::Pointer) => {
+                println!("  imul $8, %rdi");
+                println!("  sub %rdi, %rax");
+                Type::Pointer
+            }
+            (Type::Pointer, Type::Integer) => {
+                panic!("invalid operation")
+            }
+            (Type::Pointer, Type::Pointer) => {
+                println!("  sub %rdi, %rax");
+                println!("  mov $8, %rdi");
+                println!("  cqo");
+                println!("  idiv %rdi");
+                Type::Integer
+            }
+        },
         Node::Mul(lhs, rhs) => {
             gen(*rhs, *lhs);
             println!("  imul %rdi, %rax");
+            Type::Integer
         }
         Node::Div(lhs, rhs) => {
             gen(*rhs, *lhs);
             println!("  cqo");
             println!("  idiv %rdi");
+            Type::Integer
         }
         Node::Eq(lhs, rhs) => {
             cmp(*rhs, *lhs, "sete");
+            Type::Integer
         }
         Node::Ne(lhs, rhs) => {
             cmp(*rhs, *lhs, "setne");
+            Type::Integer
         }
         Node::Lt(lhs, rhs) => {
             cmp(*rhs, *lhs, "setl");
+            Type::Integer
         }
         Node::Le(lhs, rhs) => {
             cmp(*rhs, *lhs, "setle");
+            Type::Integer
         }
     }
 }
