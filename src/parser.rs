@@ -6,7 +6,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{map, opt, value};
 use nom::error::{Error, ErrorKind, ParseError};
-use nom::multi::many0;
+use nom::multi::{many0, many0_count, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{
     Compare, CompareResult, Err, IResult, InputIter, InputLength, InputTake, Needed, Parser, Slice,
@@ -127,6 +127,7 @@ pub type Program = Vec<Statement>;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Statement {
     Block(Vec<Statement>),
+    Decl(Vec<Declaration>),
     Expr(Node),
     Return(Node),
     If {
@@ -140,6 +141,13 @@ pub enum Statement {
         next: Option<Node>,
         then: Box<Statement>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declaration {
+    pub name: String,
+    pub typ: Type,
+    pub init: Option<Node>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -160,6 +168,12 @@ pub enum Node {
     Lt(Box<Node>, Box<Node>),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Type {
+    Pointer(Box<Type>),
+    Int,
+}
+
 fn parens(input: Tokens) -> IResult<Tokens, Node> {
     delimited(tag(Token::LParen), expr, tag(Token::RParen))(input)
 }
@@ -168,12 +182,16 @@ fn r#return(input: Tokens) -> IResult<Tokens, Statement> {
     preceded(tag(Token::Return), map(expr, Statement::Return))(input)
 }
 
-fn identifier(input: Tokens) -> IResult<Tokens, Node> {
+fn ident(input: Tokens) -> IResult<Tokens, String> {
     let (i1, t) = take(1usize)(input)?;
     match &t[0].value {
-        Token::Ident(i) => Ok((i1, Node::Var(i.to_string()))),
+        Token::Ident(i) => Ok((i1, i.to_string())),
         _ => Err(Err::Error(Error::new(input, ErrorKind::Tag))),
     }
+}
+
+fn identifier(input: Tokens) -> IResult<Tokens, Node> {
+    map(ident, Node::Var)(input)
 }
 
 fn integer(input: Tokens) -> IResult<Tokens, Node> {
@@ -284,6 +302,36 @@ fn expr(input: Tokens) -> IResult<Tokens, Node> {
     assign(input)
 }
 
+fn declspec(input: Tokens) -> IResult<Tokens, Type> {
+    value(Type::Int, tag(Token::Int))(input)
+}
+
+fn declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Declaration> {
+    move |input: Tokens<'a>| {
+        map(
+            tuple((
+                many0_count(tag(Token::Multiply)),
+                ident,
+                opt(preceded(tag(Token::Assign), expr)),
+            )),
+            |(n, name, init)| Declaration {
+                typ: (0..n).fold(typ.clone(), |a, _| Type::Pointer(Box::new(a))),
+                init: init.map(|x| Node::Assign(Box::new(Node::Var(name.clone())), Box::new(x))),
+                name,
+            },
+        )(input)
+    }
+}
+
+fn declaration(input: Tokens) -> IResult<Tokens, Statement> {
+    let (input, typ) = declspec(input)?;
+    let (input, decls) = terminated(
+        separated_list1(tag(Token::Comma), declarator(typ)),
+        tag(Token::SemiColon),
+    )(input)?;
+    Ok((input, Statement::Decl(decls)))
+}
+
 fn if_stmt(input: Tokens) -> IResult<Tokens, Statement> {
     map(
         tuple((
@@ -332,7 +380,11 @@ fn while_stmt(input: Tokens) -> IResult<Tokens, Statement> {
 
 fn block(input: Tokens) -> IResult<Tokens, Statement> {
     map(
-        delimited(tag(Token::LBrace), many0(stmt), tag(Token::RBrace)),
+        delimited(
+            tag(Token::LBrace),
+            many0(alt((stmt, declaration))),
+            tag(Token::RBrace),
+        ),
         Statement::Block,
     )(input)
 }

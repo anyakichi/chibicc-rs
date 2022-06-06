@@ -1,17 +1,11 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::parser::{Node, Statement};
+use crate::parser::{Declaration, Node, Statement, Type};
 
-enum Type {
-    Integer,
-    Pointer,
-}
-
-static VARIABLES: Lazy<Mutex<HashMap<String, i64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static VARIABLES: Lazy<Mutex<Vec<(Declaration, i64)>>> = Lazy::new(|| Mutex::new(vec![]));
 
 fn count() -> usize {
     static COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -31,25 +25,16 @@ fn pop(r: &str) {
 }
 
 fn find_variable(stmt: &Statement) -> i64 {
-    fn find_in_expr(node: &Node) -> i64 {
-        match node {
-            Node::Assign(lhs, rhs) => {
-                let a = find_in_expr(&*lhs);
-                let b = find_in_expr(&*rhs);
-                a.max(b)
-            }
-            Node::Var(name) => {
-                let mut vars = VARIABLES.lock().unwrap();
-                let offset = 8 * vars.len() as i64;
-                *vars.entry(name.to_string()).or_insert(offset) + 8
-            }
-            _ => 0,
-        }
+    fn find(decl: &Declaration) -> i64 {
+        let mut vars = VARIABLES.lock().unwrap();
+        let offset = 8 * vars.len() as i64;
+        vars.push((decl.clone(), offset));
+        offset + 8
     }
 
     match stmt {
         Statement::Block(block) => block.iter().map(find_variable).max().unwrap_or(0),
-        Statement::Expr(expr) => find_in_expr(expr),
+        Statement::Decl(decls) => decls.iter().map(find).max().unwrap_or(0),
         _ => 0,
     }
 }
@@ -65,7 +50,11 @@ fn generate_expr(node: Node) -> Type {
 
     fn gen_addr(name: &str) {
         let vars = VARIABLES.lock().unwrap();
-        let offset = vars.get(name).unwrap();
+        let (_, offset) = vars
+            .iter()
+            .rev()
+            .find(|(decl, _)| decl.name == name)
+            .unwrap();
         println!("  lea {}(%rbp), %rax", offset);
     }
 
@@ -98,16 +87,16 @@ fn generate_expr(node: Node) -> Type {
         Node::Var(name) => {
             gen_addr(&name);
             println!("  mov (%rax), %rax");
-            Type::Integer
+            Type::Int
         }
         Node::Integer(i) => {
             println!("  mov ${}, %rax", i);
-            Type::Integer
+            Type::Int
         }
         Node::Neg(lhs) => {
             generate_expr(*lhs);
             println!("  neg %rax");
-            Type::Integer
+            Type::Int
         }
         Node::Deref(lhs) => {
             let t = generate_expr(*lhs);
@@ -117,73 +106,79 @@ fn generate_expr(node: Node) -> Type {
         Node::Addr(lhs) => match *lhs {
             Node::Var(name) => {
                 gen_addr(&name);
-                Type::Pointer
+                let vars = VARIABLES.lock().unwrap();
+                let (decl, _) = vars
+                    .iter()
+                    .rev()
+                    .find(|(decl, _)| decl.name == name)
+                    .unwrap();
+                Type::Pointer(Box::new(decl.typ.clone()))
             }
             _ => panic!("unexpected lhs of addr"),
         },
         Node::Add(lhs, rhs) => {
             let t = match gen(*rhs, *lhs) {
-                (Type::Integer, Type::Integer) => Type::Integer,
-                (Type::Integer, Type::Pointer) => {
+                (Type::Int, Type::Int) => Type::Int,
+                (Type::Int, Type::Pointer(t)) => {
                     println!("  imul $8, %rdi");
-                    Type::Pointer
+                    Type::Pointer(t)
                 }
-                (Type::Pointer, Type::Integer) => {
+                (Type::Pointer(t), Type::Int) => {
                     println!("  imul $8, %rax");
-                    Type::Pointer
+                    Type::Pointer(t)
                 }
-                (Type::Pointer, Type::Pointer) => panic!("invalid operation"),
+                (Type::Pointer(_), Type::Pointer(_)) => panic!("invalid operation"),
             };
             println!("  add %rdi, %rax");
             t
         }
         Node::Sub(lhs, rhs) => match gen(*rhs, *lhs) {
-            (Type::Integer, Type::Integer) => {
+            (Type::Int, Type::Int) => {
                 println!("  sub %rdi, %rax");
-                Type::Integer
+                Type::Int
             }
-            (Type::Integer, Type::Pointer) => {
+            (Type::Int, Type::Pointer(t)) => {
                 println!("  imul $8, %rdi");
                 println!("  sub %rdi, %rax");
-                Type::Pointer
+                Type::Pointer(t)
             }
-            (Type::Pointer, Type::Integer) => {
+            (Type::Pointer(_), Type::Int) => {
                 panic!("invalid operation")
             }
-            (Type::Pointer, Type::Pointer) => {
+            (Type::Pointer(_), Type::Pointer(_)) => {
                 println!("  sub %rdi, %rax");
                 println!("  mov $8, %rdi");
                 println!("  cqo");
                 println!("  idiv %rdi");
-                Type::Integer
+                Type::Int
             }
         },
         Node::Mul(lhs, rhs) => {
             gen(*rhs, *lhs);
             println!("  imul %rdi, %rax");
-            Type::Integer
+            Type::Int
         }
         Node::Div(lhs, rhs) => {
             gen(*rhs, *lhs);
             println!("  cqo");
             println!("  idiv %rdi");
-            Type::Integer
+            Type::Int
         }
         Node::Eq(lhs, rhs) => {
             cmp(*rhs, *lhs, "sete");
-            Type::Integer
+            Type::Int
         }
         Node::Ne(lhs, rhs) => {
             cmp(*rhs, *lhs, "setne");
-            Type::Integer
+            Type::Int
         }
         Node::Lt(lhs, rhs) => {
             cmp(*rhs, *lhs, "setl");
-            Type::Integer
+            Type::Int
         }
         Node::Le(lhs, rhs) => {
             cmp(*rhs, *lhs, "setle");
-            Type::Integer
+            Type::Int
         }
     }
 }
@@ -192,6 +187,13 @@ fn generate_stmt(stmt: Statement) {
     match stmt {
         Statement::Block(s) => {
             s.into_iter().for_each(generate_stmt);
+        }
+        Statement::Decl(decls) => {
+            for x in decls {
+                if let Some(init) = x.init {
+                    generate_expr(init);
+                }
+            }
         }
         Statement::Expr(expr) => {
             generate_expr(expr);

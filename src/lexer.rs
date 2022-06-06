@@ -18,6 +18,7 @@ pub enum Token {
     Ident(String),
     Integer(i64),
     // Keywords
+    Int,
     If,
     Else,
     For,
@@ -41,6 +42,7 @@ pub enum Token {
     LessThan,
     LessThanEqual,
     SemiColon,
+    Comma,
 }
 
 impl<'a> InputLength for Token {
@@ -83,6 +85,7 @@ fn keyword(input: Span) -> IResult<Span, SToken> {
         value(Token::Else, tag("else")),
         value(Token::For, tag("for")),
         value(Token::If, tag("if")),
+        value(Token::Int, tag("int")),
         value(Token::Return, tag("return")),
         value(Token::While, tag("while")),
     )))(input)
@@ -126,6 +129,7 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
         f(">=", Token::GreaterThanEqual),
         f(">", Token::GreaterThan),
         f(";", Token::SemiColon),
+        f(",", Token::Comma),
     ))(input)
 }
 
