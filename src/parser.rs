@@ -4,9 +4,9 @@ use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
 use anyhow::Result;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
-use nom::combinator::{map, opt, success, value};
+use nom::combinator::{map, opt, value};
 use nom::error::{Error, ErrorKind, ParseError};
-use nom::multi::{many0, many0_count, separated_list1};
+use nom::multi::{many0, many0_count, separated_list0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{
     Compare, CompareResult, Err, IResult, InputIter, InputLength, InputTake, Needed, Parser, Slice,
@@ -166,7 +166,7 @@ pub enum Node {
     Ne(Box<Node>, Box<Node>),
     Le(Box<Node>, Box<Node>),
     Lt(Box<Node>, Box<Node>),
-    Call(String),
+    Call(String, Vec<Node>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -188,9 +188,10 @@ where
 }
 
 fn call(input: Tokens) -> IResult<Tokens, Node> {
-    map(tuple((ident, parens(success(0)))), |(name, _)| {
-        Node::Call(name)
-    })(input)
+    map(
+        tuple((ident, parens(separated_list0(tag(Token::Comma), expr)))),
+        |(name, args)| Node::Call(name, args),
+    )(input)
 }
 
 fn r#return(input: Tokens) -> IResult<Tokens, Statement> {

@@ -39,8 +39,8 @@ fn find_variable(stmt: &Statement) -> i64 {
     }
 }
 
-fn generate_expr(node: Node) -> Type {
-    fn gen(rhs: Node, lhs: Node) -> (Type, Type) {
+fn generate_expr(node: &Node) -> Type {
+    fn gen(rhs: &Node, lhs: &Node) -> (Type, Type) {
         let rt = generate_expr(rhs);
         push();
         let lt = generate_expr(lhs);
@@ -58,7 +58,7 @@ fn generate_expr(node: Node) -> Type {
         println!("  lea {}(%rbp), %rax", offset);
     }
 
-    fn cmp(rhs: Node, lhs: Node, op: &str) {
+    fn cmp(rhs: &Node, lhs: &Node, op: &str) {
         gen(rhs, lhs);
         println!("  cmp %rdi, %rax");
         println!("  {} %al", op);
@@ -67,30 +67,42 @@ fn generate_expr(node: Node) -> Type {
 
     match node {
         Node::Assign(lhs, rhs) => {
-            match *lhs {
+            match &**lhs {
                 Node::Var(name) => {
-                    gen_addr(&name);
+                    gen_addr(name);
                 }
                 Node::Deref(lhs) => {
-                    generate_expr(*lhs);
+                    generate_expr(&*lhs);
                 }
                 _ => {
                     panic!("unexpedted lhs of assign")
                 }
             }
             push();
-            let t = generate_expr(*rhs);
+            let t = generate_expr(&*rhs);
             pop("%rdi");
             println!("  mov %rax, (%rdi)");
             t
         }
-        Node::Call(name) => {
+        Node::Call(name, args) => {
+            for arg in args.iter() {
+                generate_expr(arg);
+                push();
+            }
+
+            for reg in ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"][0..args.len()]
+                .iter()
+                .rev()
+            {
+                pop(reg)
+            }
+
             println!("  mov $0, %rax");
             println!("  call {}", name);
             Type::Int
         }
         Node::Var(name) => {
-            gen_addr(&name);
+            gen_addr(name);
             println!("  mov (%rax), %rax");
             Type::Int
         }
@@ -99,30 +111,30 @@ fn generate_expr(node: Node) -> Type {
             Type::Int
         }
         Node::Neg(lhs) => {
-            generate_expr(*lhs);
+            generate_expr(&*lhs);
             println!("  neg %rax");
             Type::Int
         }
         Node::Deref(lhs) => {
-            let t = generate_expr(*lhs);
+            let t = generate_expr(&*lhs);
             println!("  mov (%rax), %rax");
             t
         }
-        Node::Addr(lhs) => match *lhs {
+        Node::Addr(lhs) => match &**lhs {
             Node::Var(name) => {
-                gen_addr(&name);
+                gen_addr(name);
                 let vars = VARIABLES.lock().unwrap();
                 let (decl, _) = vars
                     .iter()
                     .rev()
-                    .find(|(decl, _)| decl.name == name)
+                    .find(|(decl, _)| &decl.name == name)
                     .unwrap();
                 Type::Pointer(Box::new(decl.typ.clone()))
             }
             _ => panic!("unexpected lhs of addr"),
         },
         Node::Add(lhs, rhs) => {
-            let t = match gen(*rhs, *lhs) {
+            let t = match gen(&*rhs, &*lhs) {
                 (Type::Int, Type::Int) => Type::Int,
                 (Type::Int, Type::Pointer(t)) => {
                     println!("  imul $8, %rdi");
@@ -137,7 +149,7 @@ fn generate_expr(node: Node) -> Type {
             println!("  add %rdi, %rax");
             t
         }
-        Node::Sub(lhs, rhs) => match gen(*rhs, *lhs) {
+        Node::Sub(lhs, rhs) => match gen(&*rhs, &*lhs) {
             (Type::Int, Type::Int) => {
                 println!("  sub %rdi, %rax");
                 Type::Int
@@ -159,30 +171,30 @@ fn generate_expr(node: Node) -> Type {
             }
         },
         Node::Mul(lhs, rhs) => {
-            gen(*rhs, *lhs);
+            gen(&*rhs, &*lhs);
             println!("  imul %rdi, %rax");
             Type::Int
         }
         Node::Div(lhs, rhs) => {
-            gen(*rhs, *lhs);
+            gen(&*rhs, &*lhs);
             println!("  cqo");
             println!("  idiv %rdi");
             Type::Int
         }
         Node::Eq(lhs, rhs) => {
-            cmp(*rhs, *lhs, "sete");
+            cmp(&*rhs, &*lhs, "sete");
             Type::Int
         }
         Node::Ne(lhs, rhs) => {
-            cmp(*rhs, *lhs, "setne");
+            cmp(&*rhs, &*lhs, "setne");
             Type::Int
         }
         Node::Lt(lhs, rhs) => {
-            cmp(*rhs, *lhs, "setl");
+            cmp(&*rhs, &*lhs, "setl");
             Type::Int
         }
         Node::Le(lhs, rhs) => {
-            cmp(*rhs, *lhs, "setle");
+            cmp(&*rhs, &*lhs, "setle");
             Type::Int
         }
     }
@@ -196,20 +208,20 @@ fn generate_stmt(stmt: Statement) {
         Statement::Decl(decls) => {
             for x in decls {
                 if let Some(init) = x.init {
-                    generate_expr(init);
+                    generate_expr(&init);
                 }
             }
         }
         Statement::Expr(expr) => {
-            generate_expr(expr);
+            generate_expr(&expr);
         }
         Statement::Return(expr) => {
-            generate_expr(expr);
+            generate_expr(&expr);
             println!("  jmp .L.return");
         }
         Statement::If { cond, then, r#else } => {
             let c = count();
-            generate_expr(cond);
+            generate_expr(&cond);
             println!("  cmp $0, %rax");
             println!("  je  .L.else.{}", c);
             generate_stmt(*then);
@@ -229,17 +241,17 @@ fn generate_stmt(stmt: Statement) {
         } => {
             let c = count();
             if let Some(init) = init {
-                generate_expr(init);
+                generate_expr(&init);
             }
             println!(".L.begin.{}:", c);
             if let Some(cond) = cond {
-                generate_expr(cond);
+                generate_expr(&cond);
                 println!("  cmp $0, %rax");
                 println!("  je  .L.end.{}", c);
             }
             generate_stmt(*then);
             if let Some(next) = next {
-                generate_expr(next);
+                generate_expr(&next);
             }
             println!("  jmp .L.begin.{}", c);
             println!(".L.end.{}:", c);
