@@ -4,7 +4,7 @@ use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
 use anyhow::Result;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
-use nom::combinator::{map, opt, value};
+use nom::combinator::{map, opt, success, value};
 use nom::error::{Error, ErrorKind, ParseError};
 use nom::multi::{many0, many0_count, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
@@ -166,6 +166,7 @@ pub enum Node {
     Ne(Box<Node>, Box<Node>),
     Le(Box<Node>, Box<Node>),
     Lt(Box<Node>, Box<Node>),
+    Call(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -174,8 +175,22 @@ pub enum Type {
     Int,
 }
 
-fn parens(input: Tokens) -> IResult<Tokens, Node> {
-    delimited(tag(Token::LParen), expr, tag(Token::RParen))(input)
+fn parens<'a, E, F, O>(mut parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
+where
+    F: Parser<Tokens<'a>, O, E>,
+    E: ParseError<Tokens<'a>>,
+{
+    move |input: Tokens<'a>| {
+        let (input, _) = tag(Token::LParen)(input)?;
+        let (input, o2) = parser.parse(input)?;
+        tag(Token::RParen)(input).map(|(i, _)| (i, o2))
+    }
+}
+
+fn call(input: Tokens) -> IResult<Tokens, Node> {
+    map(tuple((ident, parens(success(0)))), |(name, _)| {
+        Node::Call(name)
+    })(input)
 }
 
 fn r#return(input: Tokens) -> IResult<Tokens, Statement> {
@@ -203,7 +218,7 @@ fn integer(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn primary(input: Tokens) -> IResult<Tokens, Node> {
-    alt((parens, identifier, integer))(input)
+    alt((parens(expr), call, identifier, integer))(input)
 }
 
 fn unary(input: Tokens) -> IResult<Tokens, Node> {
@@ -336,7 +351,7 @@ fn if_stmt(input: Tokens) -> IResult<Tokens, Statement> {
     map(
         tuple((
             tag(Token::If),
-            parens,
+            parens(expr),
             map(stmt, Box::new),
             opt(map(preceded(tag(Token::Else), stmt), Box::new)),
         )),
@@ -368,7 +383,11 @@ fn for_stmt(input: Tokens) -> IResult<Tokens, Statement> {
 
 fn while_stmt(input: Tokens) -> IResult<Tokens, Statement> {
     map(
-        tuple((tag(Token::While), map(parens, Some), map(stmt, Box::new))),
+        tuple((
+            tag(Token::While),
+            map(parens(expr), Some),
+            map(stmt, Box::new),
+        )),
         |(_, cond, then)| Statement::Iter {
             init: None,
             cond,

@@ -84,6 +84,11 @@ fn generate_expr(node: Node) -> Type {
             println!("  mov %rax, (%rdi)");
             t
         }
+        Node::Call(name) => {
+            println!("  mov $0, %rax");
+            println!("  call {}", name);
+            Type::Int
+        }
         Node::Var(name) => {
             gen_addr(&name);
             println!("  mov (%rax), %rax");
