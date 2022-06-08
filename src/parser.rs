@@ -189,23 +189,21 @@ fn infix_expr(token: Token, lhs: Node, rhs: Node) -> Node {
     }
 }
 
-fn infixl<'a, E, F, G, H>(
-    left: F,
+fn fold_infix<'a, E, F, G>(
+    parser: F,
     op: G,
-    right: H,
 ) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Node, E>
 where
-    F: Parser<Tokens<'a>, Node, E>,
+    F: Parser<Tokens<'a>, Node, E> + Copy,
     G: Parser<Tokens<'a>, Tokens<'a>, E>,
-    H: Parser<Tokens<'a>, Node, E>,
     E: ParseError<Tokens<'a>>,
 {
-    map(pair(left, many0(pair(op, right))), |(i, xs)| {
+    map(pair(parser, many0(pair(op, parser))), |(i, xs)| {
         xs.into_iter().fold(i, |l, (o, r)| infix_expr(*o[0], l, r))
     })
 }
 
-fn infixr<'a, E, F, G, H>(
+fn infix<'a, E, F, G, H>(
     left: F,
     op: G,
     right: H,
@@ -223,19 +221,15 @@ where
 }
 
 fn mul(input: Tokens) -> IResult<Tokens, Node> {
-    infixl(
-        unary,
-        alt((tag(Token::Multiply), tag(Token::Divide))),
-        unary,
-    )(input)
+    fold_infix(unary, alt((tag(Token::Multiply), tag(Token::Divide))))(input)
 }
 
 fn add(input: Tokens) -> IResult<Tokens, Node> {
-    infixl(mul, alt((tag(Token::Plus), tag(Token::Minus))), mul)(input)
+    fold_infix(mul, alt((tag(Token::Plus), tag(Token::Minus))))(input)
 }
 
 fn relational(input: Tokens) -> IResult<Tokens, Node> {
-    infixl(
+    fold_infix(
         add,
         alt((
             tag(Token::GreaterThan),
@@ -243,20 +237,15 @@ fn relational(input: Tokens) -> IResult<Tokens, Node> {
             tag(Token::LessThan),
             tag(Token::LessThanEqual),
         )),
-        add,
     )(input)
 }
 
 fn equality(input: Tokens) -> IResult<Tokens, Node> {
-    infixl(
-        relational,
-        alt((tag(Token::Equal), tag(Token::NotEqual))),
-        relational,
-    )(input)
+    fold_infix(relational, alt((tag(Token::Equal), tag(Token::NotEqual))))(input)
 }
 
 fn assign(input: Tokens) -> IResult<Tokens, Node> {
-    infixr(equality, tag(Token::Assign), assign)(input)
+    infix(equality, tag(Token::Assign), assign)(input)
 }
 
 fn expr(input: Tokens) -> IResult<Tokens, Node> {
