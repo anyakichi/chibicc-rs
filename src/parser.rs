@@ -130,7 +130,7 @@ pub enum Definition {
     Function {
         typ: Type,
         name: String,
-        args: Vec<String>,
+        params: Vec<Declaration>,
         body: Box<Statement>,
     },
 }
@@ -206,7 +206,7 @@ where
 fn call(input: Tokens) -> IResult<Tokens, Node> {
     map(
         tuple((ident, parens(separated_list0(tag(Token::Comma), expr)))),
-        |(name, args)| Node::Call(name, args),
+        |(name, params)| Node::Call(name, params),
     )(input)
 }
 
@@ -376,6 +376,11 @@ fn declaration(input: Tokens) -> IResult<Tokens, Statement> {
     Ok((input, Statement::Decl(decls)))
 }
 
+fn param(input: Tokens) -> IResult<Tokens, Declaration> {
+    let (input, typ) = declspec(input)?;
+    declarator(typ)(input)
+}
+
 fn if_stmt(input: Tokens) -> IResult<Tokens, Statement> {
     map(
         tuple((
@@ -446,17 +451,17 @@ fn function(input: Tokens) -> IResult<Tokens, Definition> {
     let (input, typ) = declspec(input)?;
     map(
         tuple((
-            declarator(typ.clone()),
-            map(
-                parens(separated_list0(tag(Token::Comma), declarator(typ))),
-                |xs| xs.into_iter().map(|x| (x.typ, x.name)).unzip(),
-            ),
+            declarator(typ),
+            parens(separated_list0(tag(Token::Comma), param)),
             map(block, Box::new),
         )),
-        |(f, (types, args), body)| Definition::Function {
-            typ: Type::Function(Box::new(f.typ), types),
+        |(f, params, body)| Definition::Function {
+            typ: Type::Function(
+                Box::new(f.typ),
+                params.iter().map(|x| x.typ.clone()).collect(),
+            ),
             name: f.name,
-            args,
+            params,
             body,
         },
     )(input)
