@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::parser::{Declaration, Node, Statement, Type};
+use crate::parser::{Declaration, Definition, Node, Statement, Type};
 
 static VARIABLES: Lazy<Mutex<Vec<(Declaration, i64)>>> = Lazy::new(|| Mutex::new(vec![]));
 
@@ -144,7 +144,7 @@ fn generate_expr(node: &Node) -> Type {
                     println!("  imul $8, %rax");
                     Type::Pointer(t)
                 }
-                (Type::Pointer(_), Type::Pointer(_)) => panic!("invalid operation"),
+                _ => panic!("invalid operation"),
             };
             println!("  add %rdi, %rax");
             t
@@ -159,15 +159,15 @@ fn generate_expr(node: &Node) -> Type {
                 println!("  sub %rdi, %rax");
                 Type::Pointer(t)
             }
-            (Type::Pointer(_), Type::Int) => {
-                panic!("invalid operation")
-            }
             (Type::Pointer(_), Type::Pointer(_)) => {
                 println!("  sub %rdi, %rax");
                 println!("  mov $8, %rdi");
                 println!("  cqo");
                 println!("  idiv %rdi");
                 Type::Int
+            }
+            _ => {
+                panic!("invalid operation")
             }
         },
         Node::Mul(lhs, rhs) => {
@@ -200,10 +200,10 @@ fn generate_expr(node: &Node) -> Type {
     }
 }
 
-fn generate_stmt(stmt: Statement) {
+fn generate_stmt(stmt: Statement, funcname: &str) {
     match stmt {
         Statement::Block(s) => {
-            s.into_iter().for_each(generate_stmt);
+            s.into_iter().for_each(|x| generate_stmt(x, funcname));
         }
         Statement::Decl(decls) => {
             for x in decls {
@@ -217,19 +217,19 @@ fn generate_stmt(stmt: Statement) {
         }
         Statement::Return(expr) => {
             generate_expr(&expr);
-            println!("  jmp .L.return");
+            println!("  jmp .L.return.{}", funcname);
         }
         Statement::If { cond, then, r#else } => {
             let c = count();
             generate_expr(&cond);
             println!("  cmp $0, %rax");
             println!("  je  .L.else.{}", c);
-            generate_stmt(*then);
+            generate_stmt(*then, funcname);
             println!("  jmp .L.end.{}", c);
             println!(".L.else.{}:", c);
 
             if let Some(e) = r#else {
-                generate_stmt(*e);
+                generate_stmt(*e, funcname);
             }
             println!(".L.end.{}:", c);
         }
@@ -249,7 +249,7 @@ fn generate_stmt(stmt: Statement) {
                 println!("  cmp $0, %rax");
                 println!("  je  .L.end.{}", c);
             }
-            generate_stmt(*then);
+            generate_stmt(*then, funcname);
             if let Some(next) = next {
                 generate_expr(&next);
             }
@@ -259,26 +259,44 @@ fn generate_stmt(stmt: Statement) {
     }
 }
 
-pub fn generate(stmt: Statement) {
-    let stack_size = find_variable(&stmt);
-    {
-        let mut vars = VARIABLES.lock().unwrap();
-        for (_, v) in vars.iter_mut() {
-            *v -= stack_size;
+fn generate_definition(def: Definition) {
+    match def {
+        Definition::Function {
+            typ: _,
+            name,
+            args: _,
+            body,
+        } => {
+            let stack_size = find_variable(&body);
+            {
+                let mut vars = VARIABLES.lock().unwrap();
+                for (_, v) in vars.iter_mut() {
+                    *v -= stack_size;
+                }
+            }
+
+            println!("  .globl {}", name);
+            println!("{}:", name);
+
+            println!("  push %rbp");
+            println!("  mov %rsp, %rbp");
+            println!("  sub ${}, %rsp", align_to(stack_size, 16));
+
+            generate_stmt(*body, &name);
+
+            println!(".L.return.{}:", name);
+            println!("  mov %rbp, %rsp");
+            println!("  pop %rbp");
+            println!("  ret");
+        }
+        Definition::Declaration(_) => {
+            // TODO
         }
     }
+}
 
-    println!("  .globl main");
-    println!("main:");
-
-    println!("  push %rbp");
-    println!("  mov %rsp, %rbp");
-    println!("  sub ${}, %rsp", align_to(stack_size, 16));
-
-    generate_stmt(stmt);
-
-    println!(".L.return:");
-    println!("  mov %rbp, %rsp");
-    println!("  pop %rbp");
-    println!("  ret");
+pub fn generate(defs: Vec<Definition>) {
+    for def in defs {
+        generate_definition(def);
+    }
 }

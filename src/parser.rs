@@ -122,7 +122,25 @@ impl<'a, 'b> Compare<Token> for Tokens<'a> {
     }
 }
 
-pub type Program = Vec<Statement>;
+pub type Program = Vec<Definition>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Definition {
+    Declaration(Declaration),
+    Function {
+        typ: Type,
+        name: String,
+        args: Vec<String>,
+        body: Box<Statement>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declaration {
+    pub typ: Type,
+    pub name: String,
+    pub init: Option<Node>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Statement {
@@ -141,13 +159,6 @@ pub enum Statement {
         next: Option<Node>,
         then: Box<Statement>,
     },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Declaration {
-    pub name: String,
-    pub typ: Type,
-    pub init: Option<Node>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -172,19 +183,24 @@ pub enum Node {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Pointer(Box<Type>),
+    Function(Box<Type>, Vec<Type>),
     Int,
 }
 
-fn parens<'a, E, F, O>(mut parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
+fn braces<'a, E, F, O>(parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
 where
     F: Parser<Tokens<'a>, O, E>,
     E: ParseError<Tokens<'a>>,
 {
-    move |input: Tokens<'a>| {
-        let (input, _) = tag(Token::LParen)(input)?;
-        let (input, o2) = parser.parse(input)?;
-        tag(Token::RParen)(input).map(|(i, _)| (i, o2))
-    }
+    delimited(tag(Token::LBrace), parser, tag(Token::RBrace))
+}
+
+fn parens<'a, E, F, O>(parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
+where
+    F: Parser<Tokens<'a>, O, E>,
+    E: ParseError<Tokens<'a>>,
+{
+    delimited(tag(Token::LParen), parser, tag(Token::RParen))
 }
 
 fn call(input: Tokens) -> IResult<Tokens, Node> {
@@ -275,7 +291,7 @@ fn infix<'a, E, F, G, H>(
     right: H,
 ) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Node, E>
 where
-    F: Parser<Tokens<'a>, Node, E>,
+    F: Parser<Tokens<'a>, Node, E> + Copy,
     G: Parser<Tokens<'a>, Tokens<'a>, E>,
     H: Parser<Tokens<'a>, Node, E>,
     E: ParseError<Tokens<'a>>,
@@ -325,15 +341,27 @@ fn declspec(input: Tokens) -> IResult<Tokens, Type> {
 fn declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Declaration> {
     move |input: Tokens<'a>| {
         map(
-            tuple((
-                many0_count(tag(Token::Multiply)),
-                ident,
-                opt(preceded(tag(Token::Assign), expr)),
-            )),
-            |(n, name, init)| Declaration {
-                typ: (0..n).fold(typ.clone(), |a, _| Type::Pointer(Box::new(a))),
-                init: init.map(|x| Node::Assign(Box::new(Node::Var(name.clone())), Box::new(x))),
+            pair(many0_count(tag(Token::Multiply)), ident),
+            |(n, name)| Declaration {
                 name,
+                typ: (0..n).fold(typ.clone(), |a, _| Type::Pointer(Box::new(a))),
+                init: None,
+            },
+        )(input)
+    }
+}
+
+fn init_declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Declaration> {
+    move |input: Tokens<'a>| {
+        map(
+            pair(
+                declarator(typ.clone()),
+                opt(preceded(tag(Token::Assign), expr)),
+            ),
+            |(decl, init)| Declaration {
+                init: init
+                    .map(|x| Node::Assign(Box::new(Node::Var(decl.name.clone())), Box::new(x))),
+                ..decl
             },
         )(input)
     }
@@ -342,7 +370,7 @@ fn declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, De
 fn declaration(input: Tokens) -> IResult<Tokens, Statement> {
     let (input, typ) = declspec(input)?;
     let (input, decls) = terminated(
-        separated_list1(tag(Token::Comma), declarator(typ)),
+        separated_list1(tag(Token::Comma), init_declarator(typ)),
         tag(Token::SemiColon),
     )(input)?;
     Ok((input, Statement::Decl(decls)))
@@ -399,14 +427,7 @@ fn while_stmt(input: Tokens) -> IResult<Tokens, Statement> {
 }
 
 fn block(input: Tokens) -> IResult<Tokens, Statement> {
-    map(
-        delimited(
-            tag(Token::LBrace),
-            many0(alt((stmt, declaration))),
-            tag(Token::RBrace),
-        ),
-        Statement::Block,
-    )(input)
+    map(braces(many0(alt((stmt, declaration)))), Statement::Block)(input)
 }
 
 fn stmt(input: Tokens) -> IResult<Tokens, Statement> {
@@ -421,6 +442,26 @@ fn stmt(input: Tokens) -> IResult<Tokens, Statement> {
     ))(input)
 }
 
-pub fn parse(input: Tokens) -> IResult<Tokens, Statement> {
-    terminated(block, tag(Token::Eof))(input)
+fn function(input: Tokens) -> IResult<Tokens, Definition> {
+    let (input, typ) = declspec(input)?;
+    map(
+        tuple((
+            declarator(typ.clone()),
+            map(
+                parens(separated_list0(tag(Token::Comma), declarator(typ))),
+                |xs| xs.into_iter().map(|x| (x.typ, x.name)).unzip(),
+            ),
+            map(block, Box::new),
+        )),
+        |(f, (types, args), body)| Definition::Function {
+            typ: Type::Function(Box::new(f.typ), types),
+            name: f.name,
+            args,
+            body,
+        },
+    )(input)
+}
+
+pub fn parse(input: Tokens) -> IResult<Tokens, Vec<Definition>> {
+    terminated(many0(function), tag(Token::Eof))(input)
 }
