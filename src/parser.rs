@@ -183,8 +183,20 @@ pub enum Node {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Pointer(Box<Type>),
+    Array(Box<Type>, usize),
     Function(Box<Type>, Vec<Type>),
     Int,
+}
+
+impl Type {
+    pub fn size(&self) -> usize {
+        match self {
+            Type::Pointer(_) => 8,
+            Type::Array(t, l) => t.size() * l,
+            Type::Function(_, _) => 1,
+            Type::Int => 8,
+        }
+    }
 }
 
 fn braces<'a, E, F, O>(parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
@@ -193,6 +205,14 @@ where
     E: ParseError<Tokens<'a>>,
 {
     delimited(tag(Token::LBrace), parser, tag(Token::RBrace))
+}
+
+fn brackets<'a, E, F, O>(parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
+where
+    F: Parser<Tokens<'a>, O, E>,
+    E: ParseError<Tokens<'a>>,
+{
+    delimited(tag(Token::LBracket), parser, tag(Token::RBracket))
 }
 
 fn parens<'a, E, F, O>(parser: F) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, O, E>
@@ -341,11 +361,23 @@ fn declspec(input: Tokens) -> IResult<Tokens, Type> {
 fn declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Declaration> {
     move |input: Tokens<'a>| {
         map(
-            pair(many0_count(tag(Token::Multiply)), ident),
-            |(n, name)| Declaration {
-                name,
-                typ: (0..n).fold(typ.clone(), |a, _| Type::Pointer(Box::new(a))),
-                init: None,
+            tuple((
+                many0_count(tag(Token::Multiply)),
+                ident,
+                opt(brackets(integer)),
+            )),
+            |(n, name, suffix)| {
+                let typ = (0..n).fold(typ.clone(), |a, _| Type::Pointer(Box::new(a)));
+                let typ = match suffix {
+                    Some(Node::Integer(i)) => Type::Array(Box::new(typ), i as usize),
+                    Some(_) => panic!("unexpected array length"),
+                    None => typ.clone(),
+                };
+                Declaration {
+                    name,
+                    typ,
+                    init: None,
+                }
             },
         )(input)
     }

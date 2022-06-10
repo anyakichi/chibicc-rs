@@ -9,6 +9,23 @@ struct Context<'a> {
     variables: Vec<(Declaration, i64)>,
 }
 
+impl<'a> Context<'a> {
+    fn get_variable(&self, name: &str) -> Option<&(Declaration, i64)> {
+        self.variables
+            .iter()
+            .rev()
+            .find(|(decl, _)| decl.name == name)
+    }
+
+    fn get_variable_declaration(&self, name: &str) -> Option<&Declaration> {
+        self.get_variable(name).map(|(decl, _)| decl)
+    }
+
+    fn get_variable_offset(&self, name: &str) -> Option<i64> {
+        self.get_variable(name).map(|(_, offset)| *offset)
+    }
+}
+
 fn count() -> usize {
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     COUNT.fetch_add(1, Ordering::SeqCst)
@@ -26,6 +43,18 @@ fn pop(r: &str) {
     println!("  pop {}", r);
 }
 
+fn load(typ: &Type) {
+    match typ {
+        Type::Array(_, _) => (),
+        _ => println!("  mov (%rax), %rax"),
+    }
+}
+
+fn store() {
+    pop("%rdi");
+    println!("  mov %rax, (%rdi)");
+}
+
 fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
     match stmt {
         Statement::Block(block) => {
@@ -35,7 +64,7 @@ fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
         }
         Statement::Decl(decls) => {
             for decl in decls {
-                let offset = 8 * vars.len() as i64;
+                let offset = (decl.typ.size() * vars.len()) as i64;
                 vars.push((decl.clone(), offset));
             }
         }
@@ -52,13 +81,11 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
         (rt, lt)
     }
 
-    fn gen_addr(name: &str, vars: &[(Declaration, i64)]) {
-        let (_, offset) = vars
-            .iter()
-            .rev()
-            .find(|(decl, _)| decl.name == name)
-            .unwrap();
-        println!("  lea {}(%rbp), %rax", offset);
+    fn gen_addr(name: &str, ctx: &Context) {
+        println!(
+            "  lea {}(%rbp), %rax",
+            ctx.get_variable_offset(name).unwrap()
+        );
     }
 
     fn cmp(rhs: &Node, lhs: &Node, op: &str, ctx: &Context) {
@@ -72,7 +99,7 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
         Node::Assign(lhs, rhs) => {
             match &**lhs {
                 Node::Var(name) => {
-                    gen_addr(name, &ctx.variables);
+                    gen_addr(name, ctx);
                 }
                 Node::Deref(lhs) => {
                     generate_expr(&*lhs, ctx);
@@ -83,8 +110,7 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
             }
             push();
             let t = generate_expr(&*rhs, ctx);
-            pop("%rdi");
-            println!("  mov %rax, (%rdi)");
+            store();
             t
         }
         Node::Call(name, args) => {
@@ -102,8 +128,8 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
             Type::Int
         }
         Node::Var(name) => {
-            gen_addr(name, &ctx.variables);
-            println!("  mov (%rax), %rax");
+            gen_addr(name, ctx);
+            load(&ctx.get_variable_declaration(name).unwrap().typ);
             Type::Int
         }
         Node::Integer(i) => {
@@ -117,19 +143,15 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
         }
         Node::Deref(lhs) => {
             let t = generate_expr(&*lhs, ctx);
-            println!("  mov (%rax), %rax");
+            load(&t);
             t
         }
         Node::Addr(lhs) => match &**lhs {
             Node::Var(name) => {
-                gen_addr(name, &ctx.variables);
-                let (decl, _) = ctx
-                    .variables
-                    .iter()
-                    .rev()
-                    .find(|(decl, _)| &decl.name == name)
-                    .unwrap();
-                Type::Pointer(Box::new(decl.typ.clone()))
+                gen_addr(name, ctx);
+                Type::Pointer(Box::new(
+                    ctx.get_variable_declaration(name).unwrap().typ.clone(),
+                ))
             }
             _ => panic!("unexpected lhs of addr"),
         },
