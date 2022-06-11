@@ -356,6 +356,7 @@ fn generate_definition(def: Definition) -> std::io::Result<()> {
             }
 
             writeln!(writer, "  .globl {}", name)?;
+            writeln!(writer, "  .text")?;
             writeln!(writer, "{}:", name)?;
 
             writeln!(writer, "  push %rbp")?;
