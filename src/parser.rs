@@ -364,15 +364,14 @@ fn declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, De
             tuple((
                 many0_count(tag(Token::Multiply)),
                 ident,
-                opt(brackets(integer)),
+                many0(brackets(integer)),
             )),
             |(n, name, suffix)| {
                 let typ = (0..n).fold(typ.clone(), |a, _| Type::Pointer(Box::new(a)));
-                let typ = match suffix {
-                    Some(Node::Integer(i)) => Type::Array(Box::new(typ), i as usize),
-                    Some(_) => panic!("unexpected array length"),
-                    None => typ.clone(),
-                };
+                let typ = suffix.iter().rev().fold(typ, |a, x| match x {
+                    Node::Integer(i) => Type::Array(Box::new(a), *i as usize),
+                    _ => panic!("unexpected array length"),
+                });
                 Declaration {
                     name,
                     typ,

@@ -63,9 +63,13 @@ fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
             }
         }
         Statement::Decl(decls) => {
+            let mut offset = match vars.last() {
+                Some((decl, off)) => off + decl.typ.size() as i64,
+                None => 0,
+            };
             for decl in decls {
-                let offset = (decl.typ.size() * vars.len()) as i64;
                 vars.push((decl.clone(), offset));
+                offset += decl.typ.size() as i64;
             }
         }
         _ => (),
@@ -128,9 +132,10 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
             Type::Int
         }
         Node::Var(name) => {
+            let t = &ctx.get_variable_declaration(name).unwrap().typ;
             gen_addr(name, ctx);
-            load(&ctx.get_variable_declaration(name).unwrap().typ);
-            Type::Int
+            load(t);
+            t.clone()
         }
         Node::Integer(i) => {
             println!("  mov ${}, %rax", i);
@@ -141,11 +146,13 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
             println!("  neg %rax");
             Type::Int
         }
-        Node::Deref(lhs) => {
-            let t = generate_expr(&*lhs, ctx);
-            load(&t);
-            t
-        }
+        Node::Deref(lhs) => match generate_expr(&*lhs, ctx) {
+            Type::Pointer(t) | Type::Array(t, _) => {
+                load(&*t);
+                *t
+            }
+            _ => panic!("invalid type for deref"),
+        },
         Node::Addr(lhs) => match &**lhs {
             Node::Var(name) => {
                 gen_addr(name, ctx);
@@ -158,13 +165,21 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
         Node::Add(lhs, rhs) => {
             let t = match gen(&*rhs, &*lhs, ctx) {
                 (Type::Int, Type::Int) => Type::Int,
-                (Type::Int, Type::Pointer(t)) => {
-                    println!("  imul $8, %rdi");
-                    Type::Pointer(t)
+                (Type::Int, t @ Type::Pointer(_)) => {
+                    println!("  imul ${}, %rdi", t.size());
+                    t
                 }
-                (Type::Pointer(t), Type::Int) => {
-                    println!("  imul $8, %rax");
-                    Type::Pointer(t)
+                (Type::Int, Type::Array(t, l)) => {
+                    println!("  imul ${}, %rdi", t.size());
+                    Type::Array(t, l)
+                }
+                (t @ Type::Pointer(_), Type::Int) => {
+                    println!("  imul ${}, %rax", t.size());
+                    t
+                }
+                (Type::Array(t, l), Type::Int) => {
+                    println!("  imul ${}, %rax", t.size());
+                    Type::Array(t, l)
                 }
                 _ => panic!("invalid operation"),
             };
@@ -176,14 +191,22 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
                 println!("  sub %rdi, %rax");
                 Type::Int
             }
-            (Type::Int, Type::Pointer(t)) => {
-                println!("  imul $8, %rdi");
+            (Type::Int, t @ Type::Pointer(_)) => {
+                println!("  imul ${}, %rdi", t.size());
                 println!("  sub %rdi, %rax");
-                Type::Pointer(t)
+                t
             }
-            (Type::Pointer(_), Type::Pointer(_)) => {
+            (Type::Int, Type::Array(t, l)) => {
+                println!("  imul ${}, %rdi", t.size());
                 println!("  sub %rdi, %rax");
-                println!("  mov $8, %rdi");
+                Type::Array(t, l)
+            }
+            (Type::Pointer(_), Type::Pointer(_))
+            | (Type::Pointer(_), Type::Array(_, _))
+            | (Type::Array(_, _), Type::Pointer(_))
+            | (Type::Array(_, _), Type::Array(_, _)) => {
+                println!("  sub %rdi, %rax");
+                println!("  mov ${}, %rdi", Type::Pointer(Box::new(Type::Int)).size());
                 println!("  cqo");
                 println!("  idiv %rdi");
                 Type::Int
@@ -298,7 +321,10 @@ fn generate_definition(def: Definition) {
                 .collect();
 
             find_variable(&mut variables, &body);
-            let stack_size = variables.len() as i64 * 8;
+            let stack_size = variables
+                .last()
+                .map(|(d, o)| d.typ.size() as i64 + o)
+                .unwrap_or(0);
             for (_, v) in variables.iter_mut() {
                 *v -= stack_size;
             }
