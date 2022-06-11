@@ -178,6 +178,7 @@ pub enum Node {
     Le(Box<Node>, Box<Node>),
     Lt(Box<Node>, Box<Node>),
     Call(String, Vec<Node>),
+    Sizeof(Box<Node>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -280,6 +281,9 @@ fn unary(input: Tokens) -> IResult<Tokens, Node> {
         }),
         map(preceded(tag(Token::Multiply), unary), |x| {
             Node::Deref(Box::new(x))
+        }),
+        map(preceded(tag(Token::Sizeof), unary), |x| {
+            Node::Sizeof(Box::new(x))
         }),
         postfix,
     ))(input)

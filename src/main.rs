@@ -17,8 +17,8 @@ fn main() -> Result<()> {
     let tokens = match x {
         Ok((_, t)) => t,
         Err(e) => {
-            println!("{}", &args[1]);
-            println!(
+            eprintln!("{}", &args[1]);
+            eprintln!(
                 "{}^ invalid token",
                 " ".repeat(e.input.get_utf8_column() - 1)
             );
@@ -28,10 +28,10 @@ fn main() -> Result<()> {
 
     let tokens = Tokens::new(&tokens);
     match parse(tokens) {
-        Ok((_, result)) => generate(result),
+        Ok((_, result)) => generate(result).unwrap(),
         Err(nom::Err::Error(e)) => {
-            println!("{}", &args[1]);
-            println!(
+            eprintln!("{}", &args[1]);
+            eprintln!(
                 "{}^ invalid token",
                 " ".repeat(
                     e.input

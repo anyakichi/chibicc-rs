@@ -24,6 +24,7 @@ pub enum Token {
     For,
     While,
     Return,
+    Sizeof,
     // Punctuators
     Assign,
     Plus,
@@ -89,6 +90,7 @@ fn keyword(input: Span) -> IResult<Span, SToken> {
         value(Token::If, tag("if")),
         value(Token::Int, tag("int")),
         value(Token::Return, tag("return")),
+        value(Token::Sizeof, tag("sizeof")),
         value(Token::While, tag("while")),
     )))(input)
 }

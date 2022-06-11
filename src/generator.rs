@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::parser::{Declaration, Definition, Node, Statement, Type};
@@ -35,24 +36,26 @@ fn align_to(n: i64, align: i64) -> i64 {
     (n + align - 1) / align * align
 }
 
-fn push() {
-    println!("  push %rax");
+fn push(writer: &mut dyn Write) -> std::io::Result<()> {
+    writeln!(writer, "  push %rax")
 }
 
-fn pop(r: &str) {
-    println!("  pop {}", r);
+fn pop(writer: &mut dyn Write, r: &str) -> std::io::Result<()> {
+    writeln!(writer, "  pop {}", r)
 }
 
-fn load(typ: &Type) {
+fn load(writer: &mut dyn Write, typ: &Type) -> std::io::Result<()> {
     match typ {
-        Type::Array(_, _) => (),
-        _ => println!("  mov (%rax), %rax"),
+        Type::Array(_, _) => Ok(()),
+        _ => {
+            writeln!(writer, "  mov (%rax), %rax")
+        }
     }
 }
 
-fn store() {
-    pop("%rdi");
-    println!("  mov %rax, (%rdi)");
+fn store(writer: &mut dyn Write) -> std::io::Result<()> {
+    pop(writer, "%rdi")?;
+    writeln!(writer, "  mov %rax, (%rdi)")
 }
 
 fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
@@ -76,86 +79,98 @@ fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
     }
 }
 
-fn generate_expr(node: &Node, ctx: &Context) -> Type {
-    fn gen(rhs: &Node, lhs: &Node, ctx: &Context) -> (Type, Type) {
-        let rt = generate_expr(rhs, ctx);
-        push();
-        let lt = generate_expr(lhs, ctx);
-        pop("%rdi");
-        (rt, lt)
+fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io::Result<Type> {
+    fn gen(
+        writer: &mut dyn Write,
+        rhs: &Node,
+        lhs: &Node,
+        ctx: &Context,
+    ) -> std::io::Result<(Type, Type)> {
+        let rt = generate_expr(writer, rhs, ctx)?;
+        push(writer)?;
+        let lt = generate_expr(writer, lhs, ctx)?;
+        pop(writer, "%rdi")?;
+        Ok((rt, lt))
     }
 
-    fn gen_addr(name: &str, ctx: &Context) {
-        println!(
+    fn gen_addr(writer: &mut dyn Write, name: &str, ctx: &Context) -> std::io::Result<()> {
+        writeln!(
+            writer,
             "  lea {}(%rbp), %rax",
             ctx.get_variable_offset(name).unwrap()
-        );
+        )
     }
 
-    fn cmp(rhs: &Node, lhs: &Node, op: &str, ctx: &Context) {
-        gen(rhs, lhs, ctx);
-        println!("  cmp %rdi, %rax");
-        println!("  {} %al", op);
-        println!("  movzb %al, %rax");
+    fn cmp(
+        writer: &mut dyn Write,
+        rhs: &Node,
+        lhs: &Node,
+        op: &str,
+        ctx: &Context,
+    ) -> std::io::Result<()> {
+        gen(writer, rhs, lhs, ctx)?;
+        writeln!(writer, "  cmp %rdi, %rax")?;
+        writeln!(writer, "  {} %al", op)?;
+        writeln!(writer, "  movzb %al, %rax")
     }
 
-    match node {
+    Ok(match node {
         Node::Assign(lhs, rhs) => {
             match &**lhs {
                 Node::Var(name) => {
-                    gen_addr(name, ctx);
+                    gen_addr(writer, name, ctx)?;
                 }
                 Node::Deref(lhs) => {
-                    generate_expr(&*lhs, ctx);
+                    generate_expr(writer, &*lhs, ctx)?;
                 }
                 _ => {
                     panic!("unexpedted lhs of assign")
                 }
             }
-            push();
-            let t = generate_expr(&*rhs, ctx);
-            store();
+            push(writer)?;
+            let t = generate_expr(writer, &*rhs, ctx)?;
+            store(writer)?;
             t
         }
         Node::Call(name, args) => {
             for arg in args.iter() {
-                generate_expr(arg, ctx);
-                push();
+                generate_expr(writer, arg, ctx)?;
+                push(writer)?;
             }
 
             for reg in ARGREGS[0..args.len()].iter().rev() {
-                pop(reg)
+                pop(writer, reg)?;
             }
 
-            println!("  mov $0, %rax");
-            println!("  call {}", name);
+            writeln!(writer, "  mov $0, %rax")?;
+            writeln!(writer, "  call {}", name)?;
             Type::Int
         }
         Node::Var(name) => {
             let t = &ctx.get_variable_declaration(name).unwrap().typ;
-            gen_addr(name, ctx);
-            load(t);
+            gen_addr(writer, name, ctx)?;
+            load(writer, t)?;
             t.clone()
         }
         Node::Integer(i) => {
-            println!("  mov ${}, %rax", i);
+            writeln!(writer, "  mov ${}, %rax", i)?;
             Type::Int
         }
         Node::Neg(lhs) => {
-            generate_expr(&*lhs, ctx);
-            println!("  neg %rax");
+            generate_expr(writer, &*lhs, ctx)?;
+            writeln!(writer, "  neg %rax")?;
             Type::Int
         }
-        Node::Deref(lhs) => match generate_expr(&*lhs, ctx) {
+        Node::Deref(lhs) => match generate_expr(writer, &*lhs, ctx)? {
             Type::Pointer(t) | Type::Array(t, _) => {
-                load(&*t);
+                load(writer, &*t)?;
                 *t
             }
             _ => panic!("invalid type for deref"),
         },
         Node::Addr(lhs) => match &**lhs {
             Node::Var(name) => {
-                gen_addr(name, ctx);
+                gen_addr(writer, name, ctx)?;
                 Type::Pointer(Box::new(
                     ctx.get_variable_declaration(name).unwrap().typ.clone(),
                 ))
@@ -163,52 +178,56 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
             _ => panic!("unexpected lhs of addr"),
         },
         Node::Add(lhs, rhs) => {
-            let t = match gen(&*rhs, &*lhs, ctx) {
+            let t = match gen(writer, &*rhs, &*lhs, ctx)? {
                 (Type::Int, Type::Int) => Type::Int,
                 (Type::Int, t @ Type::Pointer(_)) => {
-                    println!("  imul ${}, %rdi", t.size());
+                    writeln!(writer, "  imul ${}, %rdi", t.size())?;
                     t
                 }
                 (Type::Int, Type::Array(t, l)) => {
-                    println!("  imul ${}, %rdi", t.size());
+                    writeln!(writer, "  imul ${}, %rdi", t.size())?;
                     Type::Array(t, l)
                 }
                 (t @ Type::Pointer(_), Type::Int) => {
-                    println!("  imul ${}, %rax", t.size());
+                    writeln!(writer, "  imul ${}, %rax", t.size())?;
                     t
                 }
                 (Type::Array(t, l), Type::Int) => {
-                    println!("  imul ${}, %rax", t.size());
+                    writeln!(writer, "  imul ${}, %rax", t.size())?;
                     Type::Array(t, l)
                 }
                 _ => panic!("invalid operation"),
             };
-            println!("  add %rdi, %rax");
+            writeln!(writer, "  add %rdi, %rax")?;
             t
         }
-        Node::Sub(lhs, rhs) => match gen(&*rhs, &*lhs, ctx) {
+        Node::Sub(lhs, rhs) => match gen(writer, &*rhs, &*lhs, ctx)? {
             (Type::Int, Type::Int) => {
-                println!("  sub %rdi, %rax");
+                writeln!(writer, "  sub %rdi, %rax")?;
                 Type::Int
             }
             (Type::Int, t @ Type::Pointer(_)) => {
-                println!("  imul ${}, %rdi", t.size());
-                println!("  sub %rdi, %rax");
+                writeln!(writer, "  imul ${}, %rdi", t.size())?;
+                writeln!(writer, "  sub %rdi, %rax")?;
                 t
             }
             (Type::Int, Type::Array(t, l)) => {
-                println!("  imul ${}, %rdi", t.size());
-                println!("  sub %rdi, %rax");
+                writeln!(writer, "  imul ${}, %rdi", t.size())?;
+                writeln!(writer, "  sub %rdi, %rax")?;
                 Type::Array(t, l)
             }
             (Type::Pointer(_), Type::Pointer(_))
             | (Type::Pointer(_), Type::Array(_, _))
             | (Type::Array(_, _), Type::Pointer(_))
             | (Type::Array(_, _), Type::Array(_, _)) => {
-                println!("  sub %rdi, %rax");
-                println!("  mov ${}, %rdi", Type::Pointer(Box::new(Type::Int)).size());
-                println!("  cqo");
-                println!("  idiv %rdi");
+                writeln!(writer, "  sub %rdi, %rax")?;
+                writeln!(
+                    writer,
+                    "  mov ${}, %rdi",
+                    Type::Pointer(Box::new(Type::Int)).size()
+                )?;
+                writeln!(writer, "  cqo")?;
+                writeln!(writer, "  idiv %rdi")?;
                 Type::Int
             }
             _ => {
@@ -216,67 +235,72 @@ fn generate_expr(node: &Node, ctx: &Context) -> Type {
             }
         },
         Node::Mul(lhs, rhs) => {
-            gen(&*rhs, &*lhs, ctx);
-            println!("  imul %rdi, %rax");
+            gen(writer, &*rhs, &*lhs, ctx)?;
+            writeln!(writer, "  imul %rdi, %rax")?;
             Type::Int
         }
         Node::Div(lhs, rhs) => {
-            gen(&*rhs, &*lhs, ctx);
-            println!("  cqo");
-            println!("  idiv %rdi");
+            gen(writer, &*rhs, &*lhs, ctx)?;
+            writeln!(writer, "  cqo")?;
+            writeln!(writer, "  idiv %rdi")?;
             Type::Int
         }
         Node::Eq(lhs, rhs) => {
-            cmp(&*rhs, &*lhs, "sete", ctx);
+            cmp(writer, &*rhs, &*lhs, "sete", ctx)?;
             Type::Int
         }
         Node::Ne(lhs, rhs) => {
-            cmp(&*rhs, &*lhs, "setne", ctx);
+            cmp(writer, &*rhs, &*lhs, "setne", ctx)?;
             Type::Int
         }
         Node::Lt(lhs, rhs) => {
-            cmp(&*rhs, &*lhs, "setl", ctx);
+            cmp(writer, &*rhs, &*lhs, "setl", ctx)?;
             Type::Int
         }
         Node::Le(lhs, rhs) => {
-            cmp(&*rhs, &*lhs, "setle", ctx);
+            cmp(writer, &*rhs, &*lhs, "setle", ctx)?;
             Type::Int
         }
-    }
+        Node::Sizeof(rhs) => {
+            let t = generate_expr(&mut std::io::sink(), &*rhs, ctx)?;
+            writeln!(writer, "  mov ${}, %rax", t.size())?;
+            Type::Int
+        }
+    })
 }
 
-fn generate_stmt(stmt: Statement, ctx: &Context) {
+fn generate_stmt(writer: &mut dyn Write, stmt: Statement, ctx: &Context) -> std::io::Result<()> {
     match stmt {
-        Statement::Block(s) => {
-            s.into_iter().for_each(|x| generate_stmt(x, ctx));
-        }
+        Statement::Block(s) => s
+            .into_iter()
+            .try_for_each(|x| generate_stmt(writer, x, ctx))?,
         Statement::Decl(decls) => {
             for x in decls {
                 if let Some(init) = x.init {
-                    generate_expr(&init, ctx);
+                    generate_expr(writer, &init, ctx)?;
                 }
             }
         }
         Statement::Expr(expr) => {
-            generate_expr(&expr, ctx);
+            generate_expr(writer, &expr, ctx)?;
         }
         Statement::Return(expr) => {
-            generate_expr(&expr, ctx);
-            println!("  jmp .L.return.{}", ctx.funcname);
+            generate_expr(writer, &expr, ctx)?;
+            writeln!(writer, "  jmp .L.return.{}", ctx.funcname)?;
         }
         Statement::If { cond, then, r#else } => {
             let c = count();
-            generate_expr(&cond, ctx);
-            println!("  cmp $0, %rax");
-            println!("  je  .L.else.{}", c);
-            generate_stmt(*then, ctx);
-            println!("  jmp .L.end.{}", c);
-            println!(".L.else.{}:", c);
+            generate_expr(writer, &cond, ctx)?;
+            writeln!(writer, "  cmp $0, %rax")?;
+            writeln!(writer, "  je  .L.else.{}", c)?;
+            generate_stmt(writer, *then, ctx)?;
+            writeln!(writer, "  jmp .L.end.{}", c)?;
+            writeln!(writer, ".L.else.{}:", c)?;
 
             if let Some(e) = r#else {
-                generate_stmt(*e, ctx);
+                generate_stmt(writer, *e, ctx)?;
             }
-            println!(".L.end.{}:", c);
+            writeln!(writer, ".L.end.{}:", c)?;
         }
         Statement::Iter {
             init,
@@ -286,25 +310,26 @@ fn generate_stmt(stmt: Statement, ctx: &Context) {
         } => {
             let c = count();
             if let Some(init) = init {
-                generate_expr(&init, ctx);
+                generate_expr(writer, &init, ctx)?;
             }
-            println!(".L.begin.{}:", c);
+            writeln!(writer, ".L.begin.{}:", c)?;
             if let Some(cond) = cond {
-                generate_expr(&cond, ctx);
-                println!("  cmp $0, %rax");
-                println!("  je  .L.end.{}", c);
+                generate_expr(writer, &cond, ctx)?;
+                writeln!(writer, "  cmp $0, %rax")?;
+                writeln!(writer, "  je  .L.end.{}", c)?;
             }
-            generate_stmt(*then, ctx);
+            generate_stmt(writer, *then, ctx)?;
             if let Some(next) = next {
-                generate_expr(&next, ctx);
+                generate_expr(writer, &next, ctx)?;
             }
-            println!("  jmp .L.begin.{}", c);
-            println!(".L.end.{}:", c);
+            writeln!(writer, "  jmp .L.begin.{}", c)?;
+            writeln!(writer, ".L.end.{}:", c)?;
         }
     }
+    Ok(())
 }
 
-fn generate_definition(def: Definition) {
+fn generate_definition(def: Definition) -> std::io::Result<()> {
     match def {
         Definition::Function {
             typ: _,
@@ -312,6 +337,7 @@ fn generate_definition(def: Definition) {
             params,
             body,
         } => {
+            let mut writer = std::io::stdout();
             let nparams = params.len();
             let mut variables: Vec<(Declaration, i64)> = params
                 .into_iter()
@@ -329,38 +355,41 @@ fn generate_definition(def: Definition) {
                 *v -= stack_size;
             }
 
-            println!("  .globl {}", name);
-            println!("{}:", name);
+            writeln!(writer, "  .globl {}", name)?;
+            writeln!(writer, "{}:", name)?;
 
-            println!("  push %rbp");
-            println!("  mov %rsp, %rbp");
-            println!("  sub ${}, %rsp", align_to(stack_size, 16));
+            writeln!(writer, "  push %rbp")?;
+            writeln!(writer, "  mov %rsp, %rbp")?;
+            writeln!(writer, "  sub ${}, %rsp", align_to(stack_size, 16))?;
 
             for (i, var) in variables[0..nparams].iter().rev().enumerate() {
-                println!("  mov {}, {}(%rbp)", ARGREGS[i], var.1);
+                writeln!(writer, "  mov {}, {}(%rbp)", ARGREGS[i], var.1)?;
             }
 
             generate_stmt(
+                &mut writer,
                 *body,
                 &Context {
                     funcname: &name,
                     variables,
                 },
-            );
+            )?;
 
-            println!(".L.return.{}:", name);
-            println!("  mov %rbp, %rsp");
-            println!("  pop %rbp");
-            println!("  ret");
+            writeln!(writer, ".L.return.{}:", name)?;
+            writeln!(writer, "  mov %rbp, %rsp")?;
+            writeln!(writer, "  pop %rbp")?;
+            writeln!(writer, "  ret")?;
         }
         Definition::Declaration(_) => {
             // TODO
         }
     }
+    Ok(())
 }
 
-pub fn generate(defs: Vec<Definition>) {
+pub fn generate(defs: Vec<Definition>) -> std::io::Result<()> {
     for def in defs {
-        generate_definition(def);
+        generate_definition(def)?;
     }
+    Ok(())
 }
