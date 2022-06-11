@@ -6,7 +6,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{map, opt, value};
 use nom::error::{Error, ErrorKind, ParseError};
-use nom::multi::{many0, many0_count, separated_list0, separated_list1};
+use nom::multi::{fold_many0, many0, many0_count, separated_list0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{
     Compare, CompareResult, Err, IResult, InputIter, InputLength, InputTake, Needed, Parser, Slice,
@@ -223,13 +223,6 @@ where
     delimited(tag(Token::LParen), parser, tag(Token::RParen))
 }
 
-fn call(input: Tokens) -> IResult<Tokens, Node> {
-    map(
-        tuple((ident, parens(separated_list0(tag(Token::Comma), expr)))),
-        |(name, params)| Node::Call(name, params),
-    )(input)
-}
-
 fn r#return(input: Tokens) -> IResult<Tokens, Statement> {
     preceded(tag(Token::Return), map(expr, Statement::Return))(input)
 }
@@ -255,7 +248,25 @@ fn integer(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn primary(input: Tokens) -> IResult<Tokens, Node> {
-    alt((parens(expr), call, identifier, integer))(input)
+    alt((call, identifier, integer, parens(expr)))(input)
+}
+
+fn call(input: Tokens) -> IResult<Tokens, Node> {
+    map(
+        tuple((ident, parens(separated_list0(tag(Token::Comma), expr)))),
+        |(name, params)| Node::Call(name, params),
+    )(input)
+}
+
+fn postfix(input: Tokens) -> IResult<Tokens, Node> {
+    fn parser(input: Tokens) -> IResult<Tokens, impl FnOnce(Node) -> Node> {
+        map(brackets(expr), |e: Node| {
+            |x: Node| Node::Deref(Box::new(Node::Add(Box::new(x), Box::new(e))))
+        })(input)
+    }
+
+    let (input, init) = primary(input)?;
+    fold_many0(parser, move || init.clone(), |acc, f| f(acc))(input)
 }
 
 fn unary(input: Tokens) -> IResult<Tokens, Node> {
@@ -270,7 +281,7 @@ fn unary(input: Tokens) -> IResult<Tokens, Node> {
         map(preceded(tag(Token::Multiply), unary), |x| {
             Node::Deref(Box::new(x))
         }),
-        primary,
+        postfix,
     ))(input)
 }
 
