@@ -5,17 +5,41 @@ use crate::parser::{Declaration, Definition, Node, Statement, Type};
 
 static ARGREGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
+#[derive(Debug)]
 struct Context<'a> {
+    parent: Option<&'a Context<'a>>,
     funcname: &'a str,
     variables: Vec<(Declaration, i64)>,
 }
 
 impl<'a> Context<'a> {
+    fn new(parent: Option<&'a Context>, funcname: &'a str) -> Self {
+        Self {
+            parent,
+            funcname,
+            variables: Vec::new(),
+        }
+    }
+
+    fn add_variable(&mut self, decl: &Declaration) -> i64 {
+        let offset = if self.parent.is_some() {
+            match self.variables.last() {
+                Some((decl, off)) => off + decl.typ.size() as i64,
+                None => 0,
+            }
+        } else {
+            0
+        };
+        self.variables.push((decl.clone(), offset));
+        offset
+    }
+
     fn get_variable(&self, name: &str) -> Option<&(Declaration, i64)> {
         self.variables
             .iter()
             .rev()
             .find(|(decl, _)| decl.name == name)
+            .or_else(|| self.parent.and_then(|x| x.get_variable(name)))
     }
 
     fn get_variable_declaration(&self, name: &str) -> Option<&Declaration> {
@@ -94,11 +118,12 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
     }
 
     fn gen_addr(writer: &mut dyn Write, name: &str, ctx: &Context) -> std::io::Result<()> {
-        writeln!(
-            writer,
-            "  lea {}(%rbp), %rax",
-            ctx.get_variable_offset(name).unwrap()
-        )
+        let offset = ctx.get_variable_offset(name).unwrap();
+        if offset != 0 {
+            writeln!(writer, "  lea {}(%rbp), %rax", offset)
+        } else {
+            writeln!(writer, "  lea {}(%rip), %rax", name)
+        }
     }
 
     fn cmp(
@@ -329,7 +354,9 @@ fn generate_stmt(writer: &mut dyn Write, stmt: Statement, ctx: &Context) -> std:
     Ok(())
 }
 
-fn generate_definition(def: Definition) -> std::io::Result<()> {
+fn generate_definition(global: &mut Context, def: Definition) -> std::io::Result<()> {
+    let mut writer = std::io::stdout();
+
     match def {
         Definition::Function {
             typ: _,
@@ -337,7 +364,6 @@ fn generate_definition(def: Definition) -> std::io::Result<()> {
             params,
             body,
         } => {
-            let mut writer = std::io::stdout();
             let nparams = params.len();
             let mut variables: Vec<(Declaration, i64)> = params
                 .into_iter()
@@ -371,6 +397,7 @@ fn generate_definition(def: Definition) -> std::io::Result<()> {
                 &mut writer,
                 *body,
                 &Context {
+                    parent: Some(global),
                     funcname: &name,
                     variables,
                 },
@@ -381,16 +408,24 @@ fn generate_definition(def: Definition) -> std::io::Result<()> {
             writeln!(writer, "  pop %rbp")?;
             writeln!(writer, "  ret")?;
         }
-        Definition::Declaration(_) => {
-            // TODO
+        Definition::Declaration(xs) => {
+            for decl @ Declaration { typ, name, init: _ } in &xs {
+                global.add_variable(decl);
+                writeln!(writer, "  .data")?;
+                writeln!(writer, "  .globl {}", name)?;
+                writeln!(writer, "{}:", name)?;
+                writeln!(writer, "  .zero {}", typ.size())?;
+            }
         }
     }
     Ok(())
 }
 
 pub fn generate(defs: Vec<Definition>) -> std::io::Result<()> {
+    let mut global_ctx = Context::new(None, "");
+
     for def in defs {
-        generate_definition(def)?;
+        generate_definition(&mut global_ctx, def)?;
     }
     Ok(())
 }

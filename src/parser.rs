@@ -126,7 +126,7 @@ pub type Program = Vec<Definition>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Definition {
-    Declaration(Declaration),
+    Declaration(Vec<Declaration>),
     Function {
         typ: Type,
         name: String,
@@ -413,13 +413,12 @@ fn init_declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a
     }
 }
 
-fn declaration(input: Tokens) -> IResult<Tokens, Statement> {
+fn declaration(input: Tokens) -> IResult<Tokens, Vec<Declaration>> {
     let (input, typ) = declspec(input)?;
-    let (input, decls) = terminated(
+    terminated(
         separated_list1(tag(Token::Comma), init_declarator(typ)),
         tag(Token::SemiColon),
-    )(input)?;
-    Ok((input, Statement::Decl(decls)))
+    )(input)
 }
 
 fn param(input: Tokens) -> IResult<Tokens, Declaration> {
@@ -478,7 +477,10 @@ fn while_stmt(input: Tokens) -> IResult<Tokens, Statement> {
 }
 
 fn block(input: Tokens) -> IResult<Tokens, Statement> {
-    map(braces(many0(alt((stmt, declaration)))), Statement::Block)(input)
+    map(
+        braces(many0(alt((stmt, map(declaration, Statement::Decl))))),
+        Statement::Block,
+    )(input)
 }
 
 fn stmt(input: Tokens) -> IResult<Tokens, Statement> {
@@ -514,5 +516,8 @@ fn function(input: Tokens) -> IResult<Tokens, Definition> {
 }
 
 pub fn parse(input: Tokens) -> IResult<Tokens, Vec<Definition>> {
-    terminated(many0(function), tag(Token::Eof))(input)
+    terminated(
+        many0(alt((map(declaration, Definition::Declaration), function))),
+        tag(Token::Eof),
+    )(input)
 }
