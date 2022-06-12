@@ -187,6 +187,7 @@ pub enum Type {
     Array(Box<Type>, usize),
     Function(Box<Type>, Vec<Type>),
     Int,
+    Char,
 }
 
 impl Type {
@@ -196,6 +197,7 @@ impl Type {
             Type::Array(t, l) => t.size() * l,
             Type::Function(_, _) => 1,
             Type::Int => 8,
+            Type::Char => 1,
         }
     }
 }
@@ -370,7 +372,10 @@ fn expr(input: Tokens) -> IResult<Tokens, Node> {
 }
 
 fn declspec(input: Tokens) -> IResult<Tokens, Type> {
-    value(Type::Int, tag(Token::Int))(input)
+    alt((
+        value(Type::Char, tag(Token::Char)),
+        value(Type::Int, tag(Token::Int)),
+    ))(input)
 }
 
 fn declarator<'a>(typ: Type) -> impl FnMut(Tokens<'a>) -> IResult<Tokens<'a>, Declaration> {

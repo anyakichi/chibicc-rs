@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::parser::{Declaration, Definition, Node, Statement, Type};
 
-static ARGREGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+static ARGREGS8: &[&str] = &["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
+static ARGREGS64: &[&str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
 #[derive(Debug)]
 struct Context<'a> {
@@ -72,14 +73,22 @@ fn load(writer: &mut dyn Write, typ: &Type) -> std::io::Result<()> {
     match typ {
         Type::Array(_, _) => Ok(()),
         _ => {
-            writeln!(writer, "  mov (%rax), %rax")
+            if typ.size() == 1 {
+                writeln!(writer, "  movsbq (%rax), %rax")
+            } else {
+                writeln!(writer, "  mov (%rax), %rax")
+            }
         }
     }
 }
 
-fn store(writer: &mut dyn Write) -> std::io::Result<()> {
+fn store(writer: &mut dyn Write, typ: &Type) -> std::io::Result<()> {
     pop(writer, "%rdi")?;
-    writeln!(writer, "  mov %rax, (%rdi)")
+    if typ.size() == 1 {
+        writeln!(writer, "  mov %rl, (%rdi)")
+    } else {
+        writeln!(writer, "  mov %rax, (%rdi)")
+    }
 }
 
 fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
@@ -154,7 +163,7 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
             }
             push(writer)?;
             let t = generate_expr(writer, &*rhs, ctx)?;
-            store(writer)?;
+            store(writer, &t)?;
             t
         }
         Node::Call(name, args) => {
@@ -163,7 +172,7 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
                 push(writer)?;
             }
 
-            for reg in ARGREGS[0..args.len()].iter().rev() {
+            for reg in ARGREGS64[0..args.len()].iter().rev() {
                 pop(writer, reg)?;
             }
 
@@ -204,7 +213,10 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
         },
         Node::Add(lhs, rhs) => {
             let t = match gen(writer, &*rhs, &*lhs, ctx)? {
-                (Type::Int, Type::Int) => Type::Int,
+                (Type::Char, Type::Char) => Type::Char,
+                (Type::Int, Type::Int) | (Type::Int, Type::Char) | (Type::Char, Type::Int) => {
+                    Type::Int
+                }
                 (Type::Int, t @ Type::Pointer(_)) => {
                     writeln!(writer, "  imul ${}, %rdi", t.size())?;
                     t
@@ -227,7 +239,11 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
             t
         }
         Node::Sub(lhs, rhs) => match gen(writer, &*rhs, &*lhs, ctx)? {
-            (Type::Int, Type::Int) => {
+            (Type::Char, Type::Char) => {
+                writeln!(writer, "  sub %rdi, %rax")?;
+                Type::Char
+            }
+            (Type::Int, Type::Int) | (Type::Int, Type::Char) | (Type::Char, Type::Int) => {
                 writeln!(writer, "  sub %rdi, %rax")?;
                 Type::Int
             }
@@ -390,7 +406,11 @@ fn generate_definition(global: &mut Context, def: Definition) -> std::io::Result
             writeln!(writer, "  sub ${}, %rsp", align_to(stack_size, 16))?;
 
             for (i, var) in variables[0..nparams].iter().rev().enumerate() {
-                writeln!(writer, "  mov {}, {}(%rbp)", ARGREGS[i], var.1)?;
+                if var.0.typ.size() == 1 {
+                    writeln!(writer, "  mov {}, {}(%rbp)", ARGREGS8[i], var.1)?;
+                } else {
+                    writeln!(writer, "  mov {}, {}(%rbp)", ARGREGS64[i], var.1)?;
+                }
             }
 
             generate_stmt(

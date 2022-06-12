@@ -19,6 +19,7 @@ pub enum Token {
     Integer(i64),
     // Keywords
     Int,
+    Char,
     If,
     Else,
     For,
@@ -85,6 +86,7 @@ where
 
 fn keyword(input: Span) -> IResult<Span, SToken> {
     stoken(alt((
+        value(Token::Char, tag("char")),
         value(Token::Else, tag("else")),
         value(Token::For, tag("for")),
         value(Token::If, tag("if")),
