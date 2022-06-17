@@ -2,11 +2,10 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
+use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::{alpha1, alphanumeric1, digit1, multispace0};
 use nom::combinator::{eof, map, map_res, recognize, value};
-use nom::error::Error;
-use nom::error::ParseError;
+use nom::error::{Error, ParseError};
 use nom::multi::{many0, many0_count};
 use nom::sequence::{delimited, pair};
 use nom::{Finish, IResult, InputLength, Parser};
@@ -17,6 +16,7 @@ pub enum Token {
     Eof,
     Ident(String),
     Integer(i64),
+    Str(String),
     // Keywords
     Int,
     Char,
@@ -114,6 +114,13 @@ fn integer(input: Span) -> IResult<Span, SToken> {
     ))(input)
 }
 
+fn string(input: Span) -> IResult<Span, SToken> {
+    stoken(map(
+        delimited(tag("\""), take_until("\""), tag("\"")),
+        |s: Span| Token::Str(s.fragment().to_string()),
+    ))(input)
+}
+
 fn punctuator(input: Span) -> IResult<Span, SToken> {
     let f = |s, t| stoken(value(t, tag(s)));
 
@@ -142,7 +149,7 @@ fn punctuator(input: Span) -> IResult<Span, SToken> {
 }
 
 fn token(input: Span) -> IResult<Span, SToken> {
-    alt((keyword, identifier, integer, punctuator))(input)
+    alt((keyword, identifier, integer, string, punctuator))(input)
 }
 
 fn tokens(input: Span) -> IResult<Span, Vec<SToken>> {

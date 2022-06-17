@@ -6,6 +6,11 @@ use crate::parser::{Declaration, Definition, Node, Statement, Type};
 static ARGREGS8: &[&str] = &["%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"];
 static ARGREGS64: &[&str] = &["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
+struct SectionWriter<'a> {
+    data: &'a mut dyn Write,
+    text: &'a mut dyn Write,
+}
+
 #[derive(Debug)]
 struct Context<'a> {
     parent: Option<&'a Context<'a>>,
@@ -61,33 +66,33 @@ fn align_to(n: i64, align: i64) -> i64 {
     (n + align - 1) / align * align
 }
 
-fn push(writer: &mut dyn Write) -> std::io::Result<()> {
-    writeln!(writer, "  push %rax")
+fn push(w: &mut SectionWriter) -> std::io::Result<()> {
+    writeln!(w.text, "  push %rax")
 }
 
-fn pop(writer: &mut dyn Write, r: &str) -> std::io::Result<()> {
-    writeln!(writer, "  pop {}", r)
+fn pop(w: &mut SectionWriter, r: &str) -> std::io::Result<()> {
+    writeln!(w.text, "  pop {}", r)
 }
 
-fn load(writer: &mut dyn Write, typ: &Type) -> std::io::Result<()> {
+fn load(w: &mut SectionWriter, typ: &Type) -> std::io::Result<()> {
     match typ {
         Type::Array(_, _) => Ok(()),
         _ => {
             if typ.size() == 1 {
-                writeln!(writer, "  movsbq (%rax), %rax")
+                writeln!(w.text, "  movsbq (%rax), %rax")
             } else {
-                writeln!(writer, "  mov (%rax), %rax")
+                writeln!(w.text, "  mov (%rax), %rax")
             }
         }
     }
 }
 
-fn store(writer: &mut dyn Write, typ: &Type) -> std::io::Result<()> {
-    pop(writer, "%rdi")?;
+fn store(w: &mut SectionWriter, typ: &Type) -> std::io::Result<()> {
+    pop(w, "%rdi")?;
     if typ.size() == 1 {
-        writeln!(writer, "  mov %rl, (%rdi)")
+        writeln!(w.text, "  mov %rl, (%rdi)")
     } else {
-        writeln!(writer, "  mov %rax, (%rdi)")
+        writeln!(w.text, "  mov %rax, (%rdi)")
     }
 }
 
@@ -112,99 +117,114 @@ fn find_variable(vars: &mut Vec<(Declaration, i64)>, stmt: &Statement) {
     }
 }
 
-fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io::Result<Type> {
+fn generate_expr(w: &mut SectionWriter, node: &Node, ctx: &Context) -> std::io::Result<Type> {
     fn gen(
-        writer: &mut dyn Write,
+        w: &mut SectionWriter,
         rhs: &Node,
         lhs: &Node,
         ctx: &Context,
     ) -> std::io::Result<(Type, Type)> {
-        let rt = generate_expr(writer, rhs, ctx)?;
-        push(writer)?;
-        let lt = generate_expr(writer, lhs, ctx)?;
-        pop(writer, "%rdi")?;
+        let rt = generate_expr(w, rhs, ctx)?;
+        push(w)?;
+        let lt = generate_expr(w, lhs, ctx)?;
+        pop(w, "%rdi")?;
         Ok((rt, lt))
     }
 
-    fn gen_addr(writer: &mut dyn Write, name: &str, ctx: &Context) -> std::io::Result<()> {
+    fn gen_addr(w: &mut SectionWriter, name: &str, ctx: &Context) -> std::io::Result<()> {
         let offset = ctx.get_variable_offset(name).unwrap();
         if offset != 0 {
-            writeln!(writer, "  lea {}(%rbp), %rax", offset)
+            writeln!(w.text, "  lea {}(%rbp), %rax", offset)
         } else {
-            writeln!(writer, "  lea {}(%rip), %rax", name)
+            writeln!(w.text, "  lea {}(%rip), %rax", name)
         }
     }
 
     fn cmp(
-        writer: &mut dyn Write,
+        w: &mut SectionWriter,
         rhs: &Node,
         lhs: &Node,
         op: &str,
         ctx: &Context,
     ) -> std::io::Result<()> {
-        gen(writer, rhs, lhs, ctx)?;
-        writeln!(writer, "  cmp %rdi, %rax")?;
-        writeln!(writer, "  {} %al", op)?;
-        writeln!(writer, "  movzb %al, %rax")
+        gen(w, rhs, lhs, ctx)?;
+        writeln!(w.text, "  cmp %rdi, %rax")?;
+        writeln!(w.text, "  {} %al", op)?;
+        writeln!(w.text, "  movzb %al, %rax")
     }
 
     Ok(match node {
         Node::Assign(lhs, rhs) => {
             match &**lhs {
                 Node::Var(name) => {
-                    gen_addr(writer, name, ctx)?;
+                    gen_addr(w, name, ctx)?;
                 }
                 Node::Deref(lhs) => {
-                    generate_expr(writer, &*lhs, ctx)?;
+                    generate_expr(w, &*lhs, ctx)?;
                 }
                 _ => {
                     panic!("unexpedted lhs of assign")
                 }
             }
-            push(writer)?;
-            let t = generate_expr(writer, &*rhs, ctx)?;
-            store(writer, &t)?;
+            push(w)?;
+            let t = generate_expr(w, &*rhs, ctx)?;
+            store(w, &t)?;
             t
         }
         Node::Call(name, args) => {
             for arg in args.iter() {
-                generate_expr(writer, arg, ctx)?;
-                push(writer)?;
+                generate_expr(w, arg, ctx)?;
+                push(w)?;
             }
 
             for reg in ARGREGS64[0..args.len()].iter().rev() {
-                pop(writer, reg)?;
+                pop(w, reg)?;
             }
 
-            writeln!(writer, "  mov $0, %rax")?;
-            writeln!(writer, "  call {}", name)?;
+            writeln!(w.text, "  mov $0, %rax")?;
+            writeln!(w.text, "  call {}", name)?;
             Type::Int
         }
         Node::Var(name) => {
             let t = &ctx.get_variable_declaration(name).unwrap().typ;
-            gen_addr(writer, name, ctx)?;
-            load(writer, t)?;
+            gen_addr(w, name, ctx)?;
+            load(w, t)?;
             t.clone()
         }
+        Node::Str(_, s) => {
+            static COUNT: AtomicUsize = AtomicUsize::new(0);
+            let i = COUNT.fetch_add(1, Ordering::SeqCst);
+            let name = format!(".L..{}", i);
+            let t = Type::Array(Box::new(Type::Char), s.len() + 1);
+            writeln!(w.data, "  .data")?;
+            writeln!(w.data, "  .globl {}", name)?;
+            writeln!(w.data, "{}:", name)?;
+            for c in s.bytes() {
+                writeln!(w.data, "  .byte {}", c)?;
+            }
+            writeln!(w.data, "  .byte 0")?;
+            writeln!(w.text, "  lea {}(%rip), %rax", name)?;
+            t
+        }
         Node::Integer(i) => {
-            writeln!(writer, "  mov ${}, %rax", i)?;
+            writeln!(w.text, "  mov ${}, %rax", i)?;
             Type::Int
         }
         Node::Neg(lhs) => {
-            generate_expr(writer, &*lhs, ctx)?;
-            writeln!(writer, "  neg %rax")?;
+            generate_expr(w, &*lhs, ctx)?;
+            writeln!(w.text, "  neg %rax")?;
             Type::Int
         }
-        Node::Deref(lhs) => match generate_expr(writer, &*lhs, ctx)? {
+        Node::Deref(lhs) => match generate_expr(w, &*lhs, ctx)? {
             Type::Pointer(t) | Type::Array(t, _) => {
-                load(writer, &*t)?;
+                load(w, &*t)?;
                 *t
             }
             _ => panic!("invalid type for deref"),
         },
         Node::Addr(lhs) => match &**lhs {
             Node::Var(name) => {
-                gen_addr(writer, name, ctx)?;
+                gen_addr(w, name, ctx)?;
                 Type::Pointer(Box::new(
                     ctx.get_variable_declaration(name).unwrap().typ.clone(),
                 ))
@@ -212,63 +232,63 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
             _ => panic!("unexpected lhs of addr"),
         },
         Node::Add(lhs, rhs) => {
-            let t = match gen(writer, &*rhs, &*lhs, ctx)? {
+            let t = match gen(w, &*rhs, &*lhs, ctx)? {
                 (Type::Char, Type::Char) => Type::Char,
                 (Type::Int, Type::Int) | (Type::Int, Type::Char) | (Type::Char, Type::Int) => {
                     Type::Int
                 }
                 (Type::Int, t @ Type::Pointer(_)) => {
-                    writeln!(writer, "  imul ${}, %rdi", t.size())?;
+                    writeln!(w.text, "  imul ${}, %rdi", t.size())?;
                     t
                 }
                 (Type::Int, Type::Array(t, l)) => {
-                    writeln!(writer, "  imul ${}, %rdi", t.size())?;
+                    writeln!(w.text, "  imul ${}, %rdi", t.size())?;
                     Type::Array(t, l)
                 }
                 (t @ Type::Pointer(_), Type::Int) => {
-                    writeln!(writer, "  imul ${}, %rax", t.size())?;
+                    writeln!(w.text, "  imul ${}, %rax", t.size())?;
                     t
                 }
                 (Type::Array(t, l), Type::Int) => {
-                    writeln!(writer, "  imul ${}, %rax", t.size())?;
+                    writeln!(w.text, "  imul ${}, %rax", t.size())?;
                     Type::Array(t, l)
                 }
                 _ => panic!("invalid operation"),
             };
-            writeln!(writer, "  add %rdi, %rax")?;
+            writeln!(w.text, "  add %rdi, %rax")?;
             t
         }
-        Node::Sub(lhs, rhs) => match gen(writer, &*rhs, &*lhs, ctx)? {
+        Node::Sub(lhs, rhs) => match gen(w, &*rhs, &*lhs, ctx)? {
             (Type::Char, Type::Char) => {
-                writeln!(writer, "  sub %rdi, %rax")?;
+                writeln!(w.text, "  sub %rdi, %rax")?;
                 Type::Char
             }
             (Type::Int, Type::Int) | (Type::Int, Type::Char) | (Type::Char, Type::Int) => {
-                writeln!(writer, "  sub %rdi, %rax")?;
+                writeln!(w.text, "  sub %rdi, %rax")?;
                 Type::Int
             }
             (Type::Int, t @ Type::Pointer(_)) => {
-                writeln!(writer, "  imul ${}, %rdi", t.size())?;
-                writeln!(writer, "  sub %rdi, %rax")?;
+                writeln!(w.text, "  imul ${}, %rdi", t.size())?;
+                writeln!(w.text, "  sub %rdi, %rax")?;
                 t
             }
             (Type::Int, Type::Array(t, l)) => {
-                writeln!(writer, "  imul ${}, %rdi", t.size())?;
-                writeln!(writer, "  sub %rdi, %rax")?;
+                writeln!(w.text, "  imul ${}, %rdi", t.size())?;
+                writeln!(w.text, "  sub %rdi, %rax")?;
                 Type::Array(t, l)
             }
             (Type::Pointer(_), Type::Pointer(_))
             | (Type::Pointer(_), Type::Array(_, _))
             | (Type::Array(_, _), Type::Pointer(_))
             | (Type::Array(_, _), Type::Array(_, _)) => {
-                writeln!(writer, "  sub %rdi, %rax")?;
+                writeln!(w.text, "  sub %rdi, %rax")?;
                 writeln!(
-                    writer,
+                    w.text,
                     "  mov ${}, %rdi",
                     Type::Pointer(Box::new(Type::Int)).size()
                 )?;
-                writeln!(writer, "  cqo")?;
-                writeln!(writer, "  idiv %rdi")?;
+                writeln!(w.text, "  cqo")?;
+                writeln!(w.text, "  idiv %rdi")?;
                 Type::Int
             }
             _ => {
@@ -276,72 +296,77 @@ fn generate_expr(writer: &mut dyn Write, node: &Node, ctx: &Context) -> std::io:
             }
         },
         Node::Mul(lhs, rhs) => {
-            gen(writer, &*rhs, &*lhs, ctx)?;
-            writeln!(writer, "  imul %rdi, %rax")?;
+            gen(w, &*rhs, &*lhs, ctx)?;
+            writeln!(w.text, "  imul %rdi, %rax")?;
             Type::Int
         }
         Node::Div(lhs, rhs) => {
-            gen(writer, &*rhs, &*lhs, ctx)?;
-            writeln!(writer, "  cqo")?;
-            writeln!(writer, "  idiv %rdi")?;
+            gen(w, &*rhs, &*lhs, ctx)?;
+            writeln!(w.text, "  cqo")?;
+            writeln!(w.text, "  idiv %rdi")?;
             Type::Int
         }
         Node::Eq(lhs, rhs) => {
-            cmp(writer, &*rhs, &*lhs, "sete", ctx)?;
+            cmp(w, &*rhs, &*lhs, "sete", ctx)?;
             Type::Int
         }
         Node::Ne(lhs, rhs) => {
-            cmp(writer, &*rhs, &*lhs, "setne", ctx)?;
+            cmp(w, &*rhs, &*lhs, "setne", ctx)?;
             Type::Int
         }
         Node::Lt(lhs, rhs) => {
-            cmp(writer, &*rhs, &*lhs, "setl", ctx)?;
+            cmp(w, &*rhs, &*lhs, "setl", ctx)?;
             Type::Int
         }
         Node::Le(lhs, rhs) => {
-            cmp(writer, &*rhs, &*lhs, "setle", ctx)?;
+            cmp(w, &*rhs, &*lhs, "setle", ctx)?;
             Type::Int
         }
         Node::Sizeof(rhs) => {
-            let t = generate_expr(&mut std::io::sink(), &*rhs, ctx)?;
-            writeln!(writer, "  mov ${}, %rax", t.size())?;
+            let t = generate_expr(
+                &mut SectionWriter {
+                    data: &mut std::io::sink(),
+                    text: &mut std::io::sink(),
+                },
+                &*rhs,
+                ctx,
+            )?;
+            writeln!(w.text, "  mov ${}, %rax", t.size())?;
             Type::Int
         }
     })
 }
 
-fn generate_stmt(writer: &mut dyn Write, stmt: Statement, ctx: &Context) -> std::io::Result<()> {
+fn generate_stmt(w: &mut SectionWriter, stmt: Statement, ctx: &Context) -> std::io::Result<()> {
     match stmt {
-        Statement::Block(s) => s
-            .into_iter()
-            .try_for_each(|x| generate_stmt(writer, x, ctx))?,
+        Statement::Block(s) => s.into_iter().try_for_each(|x| generate_stmt(w, x, ctx))?,
         Statement::Decl(decls) => {
             for x in decls {
                 if let Some(init) = x.init {
-                    generate_expr(writer, &init, ctx)?;
+                    generate_expr(w, &init, ctx)?;
                 }
             }
         }
         Statement::Expr(expr) => {
-            generate_expr(writer, &expr, ctx)?;
+            generate_expr(w, &expr, ctx)?;
         }
         Statement::Return(expr) => {
-            generate_expr(writer, &expr, ctx)?;
-            writeln!(writer, "  jmp .L.return.{}", ctx.funcname)?;
+            generate_expr(w, &expr, ctx)?;
+            writeln!(w.text, "  jmp .L.return.{}", ctx.funcname)?;
         }
         Statement::If { cond, then, r#else } => {
             let c = count();
-            generate_expr(writer, &cond, ctx)?;
-            writeln!(writer, "  cmp $0, %rax")?;
-            writeln!(writer, "  je  .L.else.{}", c)?;
-            generate_stmt(writer, *then, ctx)?;
-            writeln!(writer, "  jmp .L.end.{}", c)?;
-            writeln!(writer, ".L.else.{}:", c)?;
+            generate_expr(w, &cond, ctx)?;
+            writeln!(w.text, "  cmp $0, %rax")?;
+            writeln!(w.text, "  je  .L.else.{}", c)?;
+            generate_stmt(w, *then, ctx)?;
+            writeln!(w.text, "  jmp .L.end.{}", c)?;
+            writeln!(w.text, ".L.else.{}:", c)?;
 
             if let Some(e) = r#else {
-                generate_stmt(writer, *e, ctx)?;
+                generate_stmt(w, *e, ctx)?;
             }
-            writeln!(writer, ".L.end.{}:", c)?;
+            writeln!(w.text, ".L.end.{}:", c)?;
         }
         Statement::Iter {
             init,
@@ -351,28 +376,30 @@ fn generate_stmt(writer: &mut dyn Write, stmt: Statement, ctx: &Context) -> std:
         } => {
             let c = count();
             if let Some(init) = init {
-                generate_expr(writer, &init, ctx)?;
+                generate_expr(w, &init, ctx)?;
             }
-            writeln!(writer, ".L.begin.{}:", c)?;
+            writeln!(w.text, ".L.begin.{}:", c)?;
             if let Some(cond) = cond {
-                generate_expr(writer, &cond, ctx)?;
-                writeln!(writer, "  cmp $0, %rax")?;
-                writeln!(writer, "  je  .L.end.{}", c)?;
+                generate_expr(w, &cond, ctx)?;
+                writeln!(w.text, "  cmp $0, %rax")?;
+                writeln!(w.text, "  je  .L.end.{}", c)?;
             }
-            generate_stmt(writer, *then, ctx)?;
+            generate_stmt(w, *then, ctx)?;
             if let Some(next) = next {
-                generate_expr(writer, &next, ctx)?;
+                generate_expr(w, &next, ctx)?;
             }
-            writeln!(writer, "  jmp .L.begin.{}", c)?;
-            writeln!(writer, ".L.end.{}:", c)?;
+            writeln!(w.text, "  jmp .L.begin.{}", c)?;
+            writeln!(w.text, ".L.end.{}:", c)?;
         }
     }
     Ok(())
 }
 
-fn generate_definition(global: &mut Context, def: Definition) -> std::io::Result<()> {
-    let mut writer = std::io::stdout();
-
+fn generate_definition(
+    w: &mut SectionWriter,
+    global: &mut Context,
+    def: Definition,
+) -> std::io::Result<()> {
     match def {
         Definition::Function {
             typ: _,
@@ -397,24 +424,24 @@ fn generate_definition(global: &mut Context, def: Definition) -> std::io::Result
                 *v -= stack_size;
             }
 
-            writeln!(writer, "  .globl {}", name)?;
-            writeln!(writer, "  .text")?;
-            writeln!(writer, "{}:", name)?;
+            writeln!(w.text, "  .globl {}", name)?;
+            writeln!(w.text, "  .text")?;
+            writeln!(w.text, "{}:", name)?;
 
-            writeln!(writer, "  push %rbp")?;
-            writeln!(writer, "  mov %rsp, %rbp")?;
-            writeln!(writer, "  sub ${}, %rsp", align_to(stack_size, 16))?;
+            writeln!(w.text, "  push %rbp")?;
+            writeln!(w.text, "  mov %rsp, %rbp")?;
+            writeln!(w.text, "  sub ${}, %rsp", align_to(stack_size, 16))?;
 
             for (i, var) in variables[0..nparams].iter().rev().enumerate() {
                 if var.0.typ.size() == 1 {
-                    writeln!(writer, "  mov {}, {}(%rbp)", ARGREGS8[i], var.1)?;
+                    writeln!(w.text, "  mov {}, {}(%rbp)", ARGREGS8[i], var.1)?;
                 } else {
-                    writeln!(writer, "  mov {}, {}(%rbp)", ARGREGS64[i], var.1)?;
+                    writeln!(w.text, "  mov {}, {}(%rbp)", ARGREGS64[i], var.1)?;
                 }
             }
 
             generate_stmt(
-                &mut writer,
+                &mut *w,
                 *body,
                 &Context {
                     parent: Some(global),
@@ -423,18 +450,18 @@ fn generate_definition(global: &mut Context, def: Definition) -> std::io::Result
                 },
             )?;
 
-            writeln!(writer, ".L.return.{}:", name)?;
-            writeln!(writer, "  mov %rbp, %rsp")?;
-            writeln!(writer, "  pop %rbp")?;
-            writeln!(writer, "  ret")?;
+            writeln!(w.text, ".L.return.{}:", name)?;
+            writeln!(w.text, "  mov %rbp, %rsp")?;
+            writeln!(w.text, "  pop %rbp")?;
+            writeln!(w.text, "  ret")?;
         }
         Definition::Declaration(xs) => {
             for decl @ Declaration { typ, name, init: _ } in &xs {
                 global.add_variable(decl);
-                writeln!(writer, "  .data")?;
-                writeln!(writer, "  .globl {}", name)?;
-                writeln!(writer, "{}:", name)?;
-                writeln!(writer, "  .zero {}", typ.size())?;
+                writeln!(w.data, "  .data")?;
+                writeln!(w.data, "  .globl {}", name)?;
+                writeln!(w.data, "{}:", name)?;
+                writeln!(w.data, "  .zero {}", typ.size())?;
             }
         }
     }
@@ -442,10 +469,21 @@ fn generate_definition(global: &mut Context, def: Definition) -> std::io::Result
 }
 
 pub fn generate(defs: Vec<Definition>) -> std::io::Result<()> {
+    let mut text = Vec::new();
+    let mut data = Vec::new();
+    let mut writer = SectionWriter {
+        text: &mut text,
+        data: &mut data,
+    };
     let mut global_ctx = Context::new(None, "");
 
     for def in defs {
-        generate_definition(&mut global_ctx, def)?;
+        generate_definition(&mut writer, &mut global_ctx, def)?;
     }
+
+    let mut out = std::io::stdout();
+    out.write_all(&data)?;
+    out.write_all(&text)?;
+
     Ok(())
 }

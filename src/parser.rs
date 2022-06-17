@@ -1,5 +1,6 @@
 use std::iter::Enumerate;
 use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use nom::branch::alt;
@@ -166,6 +167,7 @@ pub enum Node {
     Assign(Box<Node>, Box<Node>),
     Var(String),
     Integer(i64),
+    Str(usize, String),
     Neg(Box<Node>),
     Addr(Box<Node>),
     Deref(Box<Node>),
@@ -250,8 +252,21 @@ fn integer(input: Tokens) -> IResult<Tokens, Node> {
     }
 }
 
+fn string(input: Tokens) -> IResult<Tokens, Node> {
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    let (i1, t) = take(1usize)(input)?;
+    match &t[0].value {
+        Token::Str(s) => Ok((
+            i1,
+            Node::Str(COUNT.fetch_add(1, Ordering::SeqCst), s.to_string()),
+        )),
+        _ => Err(Err::Error(Error::new(input, ErrorKind::Tag))),
+    }
+}
+
 fn primary(input: Tokens) -> IResult<Tokens, Node> {
-    alt((call, identifier, integer, parens(expr)))(input)
+    alt((call, identifier, integer, string, parens(expr)))(input)
 }
 
 fn call(input: Tokens) -> IResult<Tokens, Node> {
