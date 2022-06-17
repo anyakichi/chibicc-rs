@@ -2,11 +2,11 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_until};
-use nom::character::complete::{alpha1, alphanumeric1, digit1, multispace0};
+use nom::bytes::complete::tag;
+use nom::character::complete::{alpha1, alphanumeric1, anychar, digit1, multispace0, none_of};
 use nom::combinator::{eof, map, map_res, recognize, value};
 use nom::error::{Error, ParseError};
-use nom::multi::{many0, many0_count};
+use nom::multi::{fold_many0, many0, many0_count};
 use nom::sequence::{delimited, pair};
 use nom::{Finish, IResult, InputLength, Parser};
 use nom_locate::{position, LocatedSpan};
@@ -114,10 +114,36 @@ fn integer(input: Span) -> IResult<Span, SToken> {
     ))(input)
 }
 
+fn character(input: Span) -> IResult<Span, char> {
+    let (input, c) = none_of("\"")(input)?;
+    if c == '\\' {
+        map(anychar, |c| match c {
+            'a' => '\x07',
+            'b' => '\x08',
+            'e' => '\x1B',
+            'f' => '\x0C',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'v' => '\x0B',
+            _ => c,
+        })(input)
+    } else {
+        Ok((input, c))
+    }
+}
+
 fn string(input: Span) -> IResult<Span, SToken> {
     stoken(map(
-        delimited(tag("\""), take_until("\""), tag("\"")),
-        |s: Span| Token::Str(s.fragment().to_string()),
+        delimited(
+            tag("\""),
+            fold_many0(character, String::new, |mut s, c| {
+                s.push(c);
+                s
+            }),
+            tag("\""),
+        ),
+        Token::Str,
     ))(input)
 }
 
