@@ -167,7 +167,7 @@ pub enum Node {
     Assign(Box<Node>, Box<Node>),
     Var(String),
     Integer(i64),
-    Str(usize, String),
+    Str(usize, Vec<u8>),
     Neg(Box<Node>),
     Addr(Box<Node>),
     Deref(Box<Node>),
@@ -259,7 +259,7 @@ fn string(input: Tokens) -> IResult<Tokens, Node> {
     match &t[0].value {
         Token::Str(s) => Ok((
             i1,
-            Node::Str(COUNT.fetch_add(1, Ordering::SeqCst), s.to_string()),
+            Node::Str(COUNT.fetch_add(1, Ordering::SeqCst), s.to_vec()),
         )),
         _ => Err(Err::Error(Error::new(input, ErrorKind::Tag))),
     }

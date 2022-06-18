@@ -199,7 +199,7 @@ fn generate_expr(w: &mut SectionWriter, node: &Node, ctx: &Context) -> std::io::
             writeln!(w.data, "  .data")?;
             writeln!(w.data, "  .globl {}", name)?;
             writeln!(w.data, "{}:", name)?;
-            for c in s.bytes() {
+            for c in s {
                 writeln!(w.data, "  .byte {}", c)?;
             }
             writeln!(w.data, "  .byte 0")?;
