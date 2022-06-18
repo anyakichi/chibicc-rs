@@ -3,10 +3,12 @@ use std::str::FromStr;
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{alpha1, alphanumeric1, anychar, digit1, multispace0, none_of};
+use nom::character::complete::{
+    alpha1, alphanumeric1, anychar, digit1, multispace0, none_of, one_of,
+};
 use nom::combinator::{eof, map, map_res, recognize, value};
 use nom::error::{Error, ParseError};
-use nom::multi::{fold_many0, many0, many0_count};
+use nom::multi::{fold_many0, many0, many0_count, many_m_n};
 use nom::sequence::{delimited, pair};
 use nom::{Finish, IResult, InputLength, Parser};
 use nom_locate::{position, LocatedSpan};
@@ -114,20 +116,32 @@ fn integer(input: Span) -> IResult<Span, SToken> {
     ))(input)
 }
 
+fn octal(input: Span) -> IResult<Span, char> {
+    map(
+        map_res(many_m_n(1, 3, one_of("01234567")), |x| {
+            u32::from_str_radix(&x.iter().collect::<String>(), 8)
+        }),
+        |x| char::from_u32(x).unwrap(),
+    )(input)
+}
+
 fn character(input: Span) -> IResult<Span, char> {
     let (input, c) = none_of("\"")(input)?;
     if c == '\\' {
-        map(anychar, |c| match c {
-            'a' => '\x07',
-            'b' => '\x08',
-            'e' => '\x1B',
-            'f' => '\x0C',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'v' => '\x0B',
-            _ => c,
-        })(input)
+        alt((
+            octal,
+            map(anychar, |c| match c {
+                'a' => '\x07',
+                'b' => '\x08',
+                'e' => '\x1B',
+                'f' => '\x0C',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'v' => '\x0B',
+                _ => c,
+            }),
+        ))(input)
     } else {
         Ok((input, c))
     }
